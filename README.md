@@ -21,7 +21,7 @@ A lightweight Chrome extension to record your screen and upload directly to Goog
 ## Requirements
 
 - A Google account
-- You'll need to set up your own Google Cloud OAuth credentials — see the setup guide on the [`dev` branch](https://github.com/rezwan2024/quickcast/tree/dev)
+- You'll need to set up your own Google Cloud OAuth credentials — open the extension's Settings page for a step-by-step setup guide
 
 ## Privacy
 
