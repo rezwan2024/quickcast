@@ -1,3 +1,5 @@
+![QuickCast](banner.png)
+
 # QuickCast
 
 A lightweight Chrome extension to record your screen and upload directly to Google Drive — no storage limits, no subscriptions.
