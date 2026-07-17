@@ -175,7 +175,18 @@ export async function authorizeAccount(credentials: AccountCredentials): Promise
     throw new Error('Google did not return a refresh token. Try disconnecting this account in Google’s permissions and reconnecting.');
   }
 
-  const grantedScopes = await fetchGrantedScopes(json.access_token);
+  // Right after a brand-new consent grant, Google's tokeninfo endpoint can
+  // briefly lag behind the token's actual scopes — a fresh access token
+  // sometimes reads back as missing a just-granted scope for a second or two
+  // before propagating, distinct from the token genuinely lacking the scope
+  // (confirmed by users hitting this error on a first Connect click and
+  // succeeding immediately on a second, with no change in what they clicked).
+  // Retry the introspection briefly before treating it as a real denial.
+  let grantedScopes = await fetchGrantedScopes(json.access_token);
+  for (let attempt = 0; !grantedScopes.includes(DRIVE_FILE_SCOPE) && attempt < 3; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    grantedScopes = await fetchGrantedScopes(json.access_token);
+  }
   if (!grantedScopes.includes(DRIVE_FILE_SCOPE)) {
     throw new Error(
       'Google did not grant Drive access for this account, even though it was requested. On the consent screen, Drive access can appear as its own separate checkbox — make sure it\'s checked before clicking Continue, then try connecting again.',
