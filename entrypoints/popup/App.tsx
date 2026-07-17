@@ -45,6 +45,29 @@ function describeMicError(err: unknown): string {
   }
 }
 
+// Only NotAllowedError has a concrete, walkable fix — NotFoundError/
+// NotReadableError are hardware issues with nothing to click through, so
+// this stays specific to that one case. Points at Settings' own "Grant
+// access" button (components/settings/mic-camera-permission-section.tsx)
+// rather than the address-bar site-permission icon: confirmed via a live
+// repro that the popup can silently refuse getUserMedia with no prompt at
+// all even when Chrome's site permission and the OS's own privacy setting
+// are both already clean — a real limitation of requesting media from a
+// transient browser-action popup rather than a normal page. Settings is a
+// real, persistent tab (opened per CLAUDE.md's architecture notes) that
+// shares this popup's chrome-extension:// origin, so a grant made there
+// covers every later call from the popup too.
+const IS_MAC = navigator.platform.toLowerCase().includes('mac');
+const MIC_BLOCKED_FIX_STEPS = [
+  'Click "Open QuickCast Settings" below (opens in a new tab).',
+  'Scroll to "Microphone & camera access" and click "Grant access" next to Microphone.',
+  'A real permission popup should appear there (this extension\'s own popup sometimes can\'t show one) — click Allow.',
+  IS_MAC
+    ? 'If it still fails, also check System Settings → Privacy & Security → Microphone → make sure Google Chrome is enabled.'
+    : 'If it still fails, also check your OS privacy settings → Microphone → make sure Chrome is allowed.',
+  'Come back here and click Start recording again.',
+];
+
 function App() {
   const [title, setTitle] = useState('');
   const [mode, setMode] = useState<RecordingMode>('screen');
@@ -52,6 +75,7 @@ function App() {
   const [cam, setCam] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [micBlocked, setMicBlocked] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountId, setAccountId] = useState<string | undefined>(undefined);
   // getAllAccounts() is async — without this, clicking Start before it
@@ -99,28 +123,24 @@ function App() {
   async function handleStart() {
     console.log('[QuickCast][popup] Start recording clicked', { mode, mic, cam, title, accountId });
 
-    // Resolve the target tab here, in the popup, as the very first thing.
-    // currentWindow reliably means "the browser window this popup is
-    // attached to" only from the popup's own context — querying it later
-    // from the background service worker (which has no window of its own)
-    // proved unreliable and could resolve to the wrong tab entirely, one
-    // activeTab was never granted for.
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!activeTab?.id || !/^https?:\/\//.test(activeTab.url ?? '')) {
-      setError('Open a regular webpage tab first, then try recording again.');
-      return;
-    }
-    const tabId = activeTab.id;
-
-    // Must be the very next thing this function does, with no state updates
-    // (and their re-renders) ahead of it. Offscreen documents are invisible,
-    // so Chrome can't surface a mic permission prompt from inside one — it
-    // silently dismisses it instead. Requesting (and immediately releasing)
-    // the mic here, in a visible page, forces that one-time OS/Chrome prompt
-    // where the user can actually see and answer it, fully awaited before
-    // this function does anything else. Once granted, the grant applies to
-    // the extension's origin, so the offscreen document's own
-    // getUserMedia({audio:true}) call later succeeds without prompting again.
+    // Must be the very first thing this function does — no state updates
+    // (and their re-renders), no chrome.tabs.query, nothing async ahead of
+    // it. Chrome only shows the mic/cam permission prompt while the click's
+    // transient user-activation is still fresh; any await before this one
+    // can let that window lapse, which makes Chrome silently refuse the
+    // request (immediate NotAllowedError, no dialog ever shown) instead of
+    // erroring loudly. Confirmed via a live repro where Chrome's own site
+    // permission (chrome://settings/content/microphone) and Windows'
+    // microphone privacy panel were both already clean, yet no prompt ever
+    // appeared — this reordering (query used to run first) is the fix.
+    // Offscreen documents are invisible, so Chrome can't surface a mic
+    // permission prompt from inside one — it silently dismisses it instead.
+    // Requesting (and immediately releasing) the mic here, in a visible
+    // page, forces that one-time OS/Chrome prompt where the user can
+    // actually see and answer it, fully awaited before this function does
+    // anything else. Once granted, the grant applies to the extension's
+    // origin, so the offscreen document's own getUserMedia({audio:true})
+    // call later succeeds without prompting again.
     if (mic) {
       try {
         const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -129,6 +149,7 @@ function App() {
       } catch (err) {
         console.error('[QuickCast][popup] Mic permission request failed', err instanceof Error ? err.name : err, err);
         setError(describeMicError(err));
+        setMicBlocked(err instanceof Error && err.name === 'NotAllowedError');
         return;
       }
     }
@@ -158,6 +179,22 @@ function App() {
         );
       }
     }
+
+    setMicBlocked(false);
+
+    // Resolve the target tab here, in the popup, after the mic/cam priming
+    // above (deliberately moved below it — see that block's comment).
+    // currentWindow reliably means "the browser window this popup is
+    // attached to" only from the popup's own context — querying it later
+    // from the background service worker (which has no window of its own)
+    // proved unreliable and could resolve to the wrong tab entirely, one
+    // activeTab was never granted for.
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!activeTab?.id || !/^https?:\/\//.test(activeTab.url ?? '')) {
+      setError('Open a regular webpage tab first, then try recording again.');
+      return;
+    }
+    const tabId = activeTab.id;
 
     setError(null);
     setStarting(true);
@@ -325,6 +362,22 @@ function App() {
           {starting ? 'Starting…' : !accountsLoaded ? 'Loading…' : 'Start recording'}
         </button>
         {error && <p className="mt-2 text-center text-xs text-[#ef4444]">{error}</p>}
+        {micBlocked && (
+          <div className="mt-2 rounded-lg border border-[#fecaca] bg-[#fef2f2] p-3 text-xs text-[#7f1d1d]">
+            <ol className="list-decimal space-y-1 pl-4">
+              {MIC_BLOCKED_FIX_STEPS.map((step, i) => (
+                <li key={i}>{step}</li>
+              ))}
+            </ol>
+            <button
+              type="button"
+              onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') })}
+              className="mt-2 w-full rounded-md bg-[#7f1d1d] py-1.5 text-center font-medium text-white"
+            >
+              Open QuickCast Settings
+            </button>
+          </div>
+        )}
         <p className="mt-3 text-center text-xs text-[#999]">Ctrl+Shift+0 to open</p>
       </div>
     </div>

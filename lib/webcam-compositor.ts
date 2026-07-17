@@ -99,7 +99,6 @@ export async function startWebcamCompositor(
   const { x, y } = circleCenter(webcamCorner, canvas.width, canvas.height);
   const radius = CIRCLE_DIAMETER / 2;
 
-  let rafId = 0;
   let stopped = false;
   // Set by disableWebcam() (the on-screen bubble's "close" button) — the
   // draw loop keeps running (screen capture must continue), it just stops
@@ -124,16 +123,25 @@ export async function startWebcamCompositor(
       ctx!.strokeStyle = '#ffffff';
       ctx!.stroke();
     }
-
-    rafId = requestAnimationFrame(drawFrame);
   }
-  rafId = requestAnimationFrame(drawFrame);
+  // A timer, not requestAnimationFrame: rAF is tied to the browser's actual
+  // paint/vsync cycle, which an invisible offscreen document never receives
+  // — Chrome can throttle it to near-zero or never fire it at all for a page
+  // that's never painted to screen. That left the canvas never redrawn,
+  // which — combined with captureStream() sampling a canvas that never
+  // changes — produced a recording with no real frame data (confirmed via a
+  // live repro: zero "Chunk received" log lines across a 5-minute recording
+  // whenever the webcam compositor was active). setInterval has no such
+  // dependency on painting, so the canvas keeps updating regardless of the
+  // document's visibility.
+  const intervalId = setInterval(drawFrame, 1000 / frameRate);
+  drawFrame();
 
   // A fixed capture rate here (not left to fire on every canvas repaint) is
   // what actually makes recordingDefaults.frameRate apply to the composited
   // output — the draw loop above just keeps the canvas current at whatever
-  // rate rAF fires; captureStream(frameRate) is what samples it down (or up)
-  // to the configured rate for MediaRecorder.
+  // rate the timer fires; captureStream(frameRate) is what samples it down
+  // (or up) to the configured rate for MediaRecorder.
   const stream = canvas.captureStream(frameRate);
 
   return {
@@ -143,7 +151,7 @@ export async function startWebcamCompositor(
     },
     stop: () => {
       stopped = true;
-      cancelAnimationFrame(rafId);
+      clearInterval(intervalId);
       desktopVideo.pause();
       desktopVideo.srcObject = null;
       camVideo.pause();

@@ -26,6 +26,12 @@ interface TokenResponse {
   access_token: string;
   refresh_token?: string;
   expires_in: number;
+  // Google's token endpoint returns the actual granted scopes directly in
+  // this same response — authoritative and immediate, unlike a separate
+  // tokeninfo introspection call afterward, which is a different service and
+  // can lag behind by several seconds (see the retry loop this scope check
+  // replaces as the primary source of truth for).
+  scope?: string;
 }
 
 function expiresAtFrom(expiresInSeconds: number): number {
@@ -73,17 +79,23 @@ const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 // exchange catches a missing grant immediately — at connect time, in this
 // modal, with a clear actionable message — instead of only surfacing as a
 // 403 minutes later during an unrelated recording.
-async function fetchGrantedScopes(accessToken: string): Promise<string[]> {
+async function fetchGrantedScopes(accessToken: string, attemptLabel: string): Promise<string[]> {
   const response = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(accessToken)}`);
   if (!response.ok) {
     // Introspection failing is a diagnostic call failing, not the actual
     // authorization — don't block a connection on it; the real Drive calls
     // will still surface a clear error later (see lib/drive.ts) if the scope
     // genuinely is missing.
-    console.warn('[QuickCast][oauth] tokeninfo lookup failed — skipping the granted-scope check', response.status);
+    console.warn('[QuickCast][oauth]', attemptLabel, 'tokeninfo lookup failed — skipping the granted-scope check', response.status);
     return [DRIVE_FILE_SCOPE];
   }
-  const json = (await response.json()) as { scope?: string };
+  // Logged in full (not just the scope check's pass/fail) so a repro of the
+  // "works on 2nd attempt only" report can be compared attempt-by-attempt —
+  // email/aud/azp confirm which Google account and OAuth client the token
+  // actually belongs to, independent of what the user saw on Google's own
+  // consent screens.
+  const json = (await response.json()) as { scope?: string; email?: string; aud?: string; azp?: string; expires_in?: string };
+  console.log('[QuickCast][oauth]', attemptLabel, 'tokeninfo response:', json);
   return json.scope?.split(' ') ?? [];
 }
 
@@ -175,17 +187,26 @@ export async function authorizeAccount(credentials: AccountCredentials): Promise
     throw new Error('Google did not return a refresh token. Try disconnecting this account in Google’s permissions and reconnecting.');
   }
 
-  // Right after a brand-new consent grant, Google's tokeninfo endpoint can
-  // briefly lag behind the token's actual scopes — a fresh access token
-  // sometimes reads back as missing a just-granted scope for a second or two
-  // before propagating, distinct from the token genuinely lacking the scope
-  // (confirmed by users hitting this error on a first Connect click and
-  // succeeding immediately on a second, with no change in what they clicked).
-  // Retry the introspection briefly before treating it as a real denial.
-  let grantedScopes = await fetchGrantedScopes(json.access_token);
-  for (let attempt = 0; !grantedScopes.includes(DRIVE_FILE_SCOPE) && attempt < 3; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    grantedScopes = await fetchGrantedScopes(json.access_token);
+  console.log('[QuickCast][oauth] token exchange response scope field:', json.scope);
+
+  // Prefer the token endpoint's own `scope` field — it's part of the same
+  // atomic response as the tokens themselves, so there's no separate service
+  // or propagation delay to race against. A retry loop against the separate
+  // tokeninfo introspection endpoint (kept below as a fallback for the rare
+  // case Google omits `scope` from the exchange response) turned out NOT to
+  // fix a reproducible "fails on 1st Connect, succeeds identically on 2nd"
+  // report even at 6 retries over 12s — logging both this field and every
+  // introspection attempt's full response is what the next repro needs to
+  // show whether the exchange response itself already lacks the scope
+  // (a real, immediate denial) vs. only the separate introspection call
+  // lagging (this endpoint's own actual behavior, still not fully explained).
+  let grantedScopes = json.scope ? json.scope.split(' ') : null;
+  if (!grantedScopes) {
+    grantedScopes = await fetchGrantedScopes(json.access_token, 'attempt 0 (no scope in exchange response)');
+    for (let attempt = 1; !grantedScopes.includes(DRIVE_FILE_SCOPE) && attempt <= 6; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      grantedScopes = await fetchGrantedScopes(json.access_token, `attempt ${attempt}`);
+    }
   }
   if (!grantedScopes.includes(DRIVE_FILE_SCOPE)) {
     throw new Error(

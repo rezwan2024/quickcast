@@ -7,6 +7,7 @@ import { PasteCredentialsModal } from '@/components/settings/paste-credentials-m
 import { StorageBehaviorSection } from '@/components/settings/storage-behavior-section';
 import { RecordingDefaultsSection } from '@/components/settings/recording-defaults-section';
 import { CrossTabPermissionSection } from '@/components/settings/cross-tab-permission-section';
+import { MicCameraPermissionSection } from '@/components/settings/mic-camera-permission-section';
 import { useToast, ToastHost } from '@/components/toast';
 import { getAllAccounts, saveAccount, setDefaultAccount, removeAccount, updateAccount } from '@/lib/accounts-storage';
 import { authorizeAccount } from '@/lib/oauth';
@@ -165,13 +166,22 @@ function App() {
     if (!confirm(`Disconnect ${account.email}? QuickCast will no longer be able to upload to this account.`)) {
       return;
     }
-    // Best-effort: revoke the token with Google too, so the grant doesn't
-    // linger in the user's Google Account permissions after disconnecting
-    // here. Not blocking on failure — the local credentials/tokens are
-    // cleared either way (see CLAUDE.md: always clear tokens on disconnect).
-    fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(account.tokens.refreshToken)}`, {
-      method: 'POST',
-    }).catch((err) => console.warn(LOG, 'Token revoke request failed (continuing anyway)', err));
+    // Revoke the token with Google too, so the grant doesn't linger in the
+    // user's Google Account permissions after disconnecting here. Awaited
+    // (but never blocks on failure — local credentials/tokens are cleared
+    // either way, see CLAUDE.md: always clear tokens on disconnect) because
+    // an immediate reconnect of this same account otherwise races Google's
+    // own revoke-propagation against the fresh consent grant: the new
+    // token's scopes can read back incomplete via tokeninfo (same class of
+    // lag as the first-connect retry below) until the old grant has
+    // actually finished being revoked server-side.
+    try {
+      await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(account.tokens.refreshToken)}`, {
+        method: 'POST',
+      });
+    } catch (err) {
+      console.warn(LOG, 'Token revoke request failed (continuing anyway)', err);
+    }
 
     await removeAccount(account.id);
     await refreshAccounts();
@@ -238,6 +248,7 @@ function App() {
       {!loading && <StorageBehaviorSection value={storageBehavior} onChange={handleStorageBehaviorChange} />}
       {!loading && <RecordingDefaultsSection value={recordingDefaults} onChange={handleRecordingDefaultsChange} />}
       {!loading && <CrossTabPermissionSection onError={showToast} />}
+      {!loading && <MicCameraPermissionSection onError={showToast} />}
 
       {modal === 'connect' && (
         <ConnectModal
