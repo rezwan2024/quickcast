@@ -42,15 +42,20 @@ function App() {
     return list;
   }
 
-  // Retries the quota fetch for any account that doesn't have one yet — e.g.
-  // if the connect-time fetch in handleAuthorize failed (a token that's
+  // Refreshes every connected account's quota, every time Settings opens.
+  // FOUND: this used to only refetch accounts with quota == null — meaning
+  // an account that got a real quota value once (at connect time, or on an
+  // earlier retry here) never had it updated again, so the number shown here
+  // silently drifted further from Drive's own live figure with every
+  // recording uploaded afterward (confirmed live: Settings showed 1.37 GB
+  // for an account Drive itself reported as 1.55 GB). Also still covers the
+  // original purpose — an account that never got a quota at all (a token
   // momentarily unready right after OAuth, a transient network blip, or a
   // 401 that needed a refresh driveFetch can do but the raw-token
-  // fetchStorageQuota used at connect time can't). Runs every time Settings
-  // opens, not just once, so a persistently-null quota keeps getting another
-  // chance rather than being stuck "Storage unknown" forever.
-  async function refetchMissingQuotas(list: Account[]): Promise<void> {
-    for (const account of list.filter((a) => a.quota == null)) {
+  // fetchStorageQuota used at connect time can't) keeps getting another
+  // chance every time Settings opens, same as before.
+  async function refreshAllQuotas(list: Account[]): Promise<void> {
+    for (const account of list) {
       // Logged before the call, not just on failure — accountId and email
       // together make it unambiguous which stored account's token
       // driveFetch (inside fetchStorageQuotaForAccount) is about to look up
@@ -87,7 +92,7 @@ function App() {
         // Not awaited — the account rows already render (with "Storage
         // unknown" for whichever ones are missing a quota) without waiting on
         // this; rows update in place as each fetch resolves.
-        void refetchMissingQuotas(list);
+        void refreshAllQuotas(list);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -117,8 +122,8 @@ function App() {
     }
     // Storage quota is a nice-to-have for the account row — don't let a quota
     // fetch failure block the account from being connected. A failure here
-    // isn't permanent: refetchMissingQuotas (below) retries it every time
-    // Settings opens for as long as the saved account's quota stays null.
+    // isn't permanent: refreshAllQuotas (below) refreshes every account's
+    // quota every time Settings opens, this one included.
     const quota = await fetchStorageQuota(tokens.accessToken)
       .then((q) => {
         console.log(LOG, `Fetched quota for ${userInfo.email}: ${q.usageBytes} used of ${q.limitBytes ?? 'unlimited'} total`);
