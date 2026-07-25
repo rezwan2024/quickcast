@@ -19,13 +19,17 @@ export interface RecordingConfig {
   // driveAuth/folderId are resolved in background.ts and passed through).
   videoBitsPerSecond?: number;
   frameRate?: number;
-  // Set only when `cam` is true — where to composite the webcam circle if
-  // getUserMedia for the camera actually succeeds (see
-  // entrypoints/offscreen/main.ts's prepare()).
+  // Set only when `cam` is true — which corner the content-script's own
+  // on-page webcam bubble anchors to (components/webcam-bubble.tsx). No
+  // longer used for recording composition: the offscreen document does not
+  // open its own camera or composite a circle onto the recorded video — the
+  // on-page bubble (already visible on screen) is the single source of the
+  // webcam in both the live view and the recorded pixels, per the
+  // double-bubble fix (see lib/webcam-compositor.ts's removal).
   webcamCorner?: WebcamCorner;
 }
 
-export type RecordingState = 'idle' | 'countdown' | 'recording' | 'paused' | 'stopping';
+export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopping';
 
 export type UploadHealth = 'synced' | 'green' | 'amber' | 'red' | 'offline';
 

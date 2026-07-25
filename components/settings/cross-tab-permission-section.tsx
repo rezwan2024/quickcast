@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { IconAlertTriangle } from '@tabler/icons-react';
 import { Toggle } from '@/components/toggle';
-import { removeCrossTabPermission, requestCrossTabPermission } from '@/lib/cross-tab-permission';
+import { hasCrossTabPermission, removeCrossTabPermission, requestCrossTabPermission } from '@/lib/cross-tab-permission';
 import {
   getFollowWebcamAcrossTabs,
   getFollowWidgetAcrossTabs,
@@ -14,16 +14,37 @@ interface CrossTabPermissionSectionProps {
 }
 
 export function CrossTabPermissionSection({ onError }: CrossTabPermissionSectionProps) {
-  const [followWidget, setFollowWidget] = useState(true);
-  const [followWebcam, setFollowWebcam] = useState(true);
+  const [followWidget, setFollowWidget] = useState(false);
+  const [followWebcam, setFollowWebcam] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([getFollowWidgetAcrossTabs(), getFollowWebcamAcrossTabs()]).then(([widget, webcam]) => {
-      setFollowWidget(widget);
-      setFollowWebcam(webcam);
-      setLoading(false);
-    });
+    Promise.all([getFollowWidgetAcrossTabs(), getFollowWebcamAcrossTabs(), hasCrossTabPermission()]).then(
+      ([widgetPref, webcamPref, granted]) => {
+        // The stored preference alone is not authoritative — both default to
+        // `true` (see lib/preferences.ts), but the real <all_urls> grant can
+        // only ever be requested from an actual user gesture (a click on one
+        // of these toggles). On a fresh install/profile — or if the grant
+        // was ever revoked outside Settings (e.g. via chrome://extensions'
+        // own permissions UI) — the stored preference still says "on" while
+        // Chrome never actually granted anything, which previously showed
+        // both toggles as checked while cross-tab following silently did
+        // nothing at all. Deriving the displayed state from the real grant
+        // (not just the stored intent) means the toggle only ever shows ON
+        // when it's actually functioning, and correcting the stale stored
+        // preference back to false means the next click genuinely fires
+        // chrome.permissions.request() instead of appearing to do nothing
+        // (setFollowWidgetAcrossTabs/setFollowWebcamAcrossTabs already skip
+        // that request entirely when the toggle looks like it's already on).
+        const widget = widgetPref && granted;
+        const webcam = webcamPref && granted;
+        setFollowWidget(widget);
+        setFollowWebcam(webcam);
+        if (widgetPref && !granted) void setFollowWidgetAcrossTabs(false);
+        if (webcamPref && !granted) void setFollowWebcamAcrossTabs(false);
+        setLoading(false);
+      },
+    );
   }, []);
 
   // Both toggles share the same underlying <all_urls> grant (there's no
@@ -68,8 +89,8 @@ export function CrossTabPermissionSection({ onError }: CrossTabPermissionSection
           <div>
             <p className="text-sm font-medium text-[#1a1d24]">Show recording widget on any tab</p>
             <p className="mt-0.5 text-xs text-[#666]">
-              On by default. Chrome only lets it appear on the tab you started recording on unless this is on — then
-              the timer widget follows you to every tab you switch to during recording.
+              Chrome only lets it appear on the tab you started recording on unless this is on — then the timer
+              widget follows you to every tab you switch to during recording. Requires a one-time permission grant.
             </p>
           </div>
           <Toggle
@@ -83,8 +104,8 @@ export function CrossTabPermissionSection({ onError }: CrossTabPermissionSection
           <div>
             <p className="text-sm font-medium text-[#1a1d24]">Show webcam bubble on any tab</p>
             <p className="mt-0.5 text-xs text-[#666]">
-              On by default. When on, the webcam bubble moves to whichever tab is active (never open in more than
-              one at once). When off, it only shows on the tab you started recording on.
+              When on, the webcam bubble moves to whichever tab is active (never open in more than one at once). When
+              off, it only shows on the tab you started recording on. Requires a one-time permission grant.
             </p>
           </div>
           <Toggle

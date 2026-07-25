@@ -6,7 +6,6 @@ import {
   setAnyoneWithLinkPermission,
   uploadChunk,
 } from '@/lib/drive';
-import { startWebcamCompositor, type WebcamCompositor } from '@/lib/webcam-compositor';
 import type {
   OffscreenBeginMessage,
   OffscreenBlobReadyMessage,
@@ -18,7 +17,6 @@ import type {
   OffscreenUploadDisabledMessage,
   OffscreenUploadFinishedMessage,
   OffscreenUploadProgressMessage,
-  OffscreenWebcamStopMessage,
 } from '@/lib/messaging';
 import type { DriveAuth } from '@/types/account';
 import type { RecordingConfig, UploadHealth } from '@/types/recording';
@@ -53,23 +51,14 @@ const FINAL_FLUSH_TIMEOUT_MS = 5 * 60_000;
 interface Session {
   config: RecordingConfig;
   // Every track that owns real hardware/capture and must have .stop() called
-  // on cleanup — desktop video, webcam video (if acquired), mic audio. Does
-  // NOT include the canvas-composited video track that MediaRecorder
-  // actually records from when a webcam is active — that's owned by
-  // `compositor` below and stopped via its own stop() (which also halts the
-  // draw loop, not just the track).
+  // on cleanup — desktop video and mic audio. This document no longer opens
+  // its own webcam or composites anything onto the recorded video — see the
+  // double-bubble fix's removal of lib/webcam-compositor.ts. The on-page
+  // bubble (content script's own, entirely separate getUserMedia call) is
+  // the sole source of the webcam in both the live view and the recorded
+  // pixels, since the screen/window/tab capture below naturally includes it
+  // whenever the captured surface shows that tab.
   tracks: MediaStreamTrack[];
-  // Only set when the webcam was requested and getUserMedia succeeded — see
-  // lib/webcam-compositor.ts. Its stop() must be called before/alongside
-  // stopTracks() so the requestAnimationFrame draw loop doesn't keep running
-  // (and referencing torn-down streams) after the recording ends.
-  compositor?: WebcamCompositor;
-  // The raw webcam video track (also present in `tracks` above, for the
-  // full-recording-end cleanup path) — kept separately so the
-  // offscreen:webcam-stop handler (user closed the on-screen bubble
-  // mid-recording) can stop just this one track and turn off the camera
-  // light immediately, without touching the desktop/mic tracks.
-  camTrack?: MediaStreamTrack;
   recorder: MediaRecorder;
   chunkIndex: number;
   // Set right before we stop tracks ourselves (normal Stop/Cancel), so the
@@ -88,12 +77,11 @@ interface Session {
   sessionUri?: string;
   fileId?: string;
   uploadDisabled: boolean;
-  // Set alongside uploadDisabled. Not sent to the widget directly from here —
-  // prepare() runs before widget:ensure-state is even sent, so the widget
-  // (which only mounts and starts listening once that arrives) isn't
-  // guaranteed to exist yet to receive it. begin() re-reports this once
-  // recording actually starts, a point by which the widget is definitely
-  // mounted (it just sent widget:countdown-done itself).
+  // Set alongside uploadDisabled. prepare()'s own response now returns this
+  // directly (see prepare()'s final lines) so background.ts can persist it
+  // into the session before the widget is ever mounted — not sent to the
+  // widget directly from here, since this document has no reliable way to
+  // know the widget's listener is alive yet at prepare() time.
   uploadDisabledReason?: string;
   uploadedBytes: number;
   // Chunks recorded but not yet confirmed uploaded. Kept as an array so a
@@ -192,9 +180,9 @@ function computeHealth(session: Session, speedBytesPerSec: number): UploadHealth
 // Surfaced directly in the widget (see WidgetUploadDisabledMessage) so the
 // reason is visible without opening the offscreen document's own devtools —
 // which most users won't know how to find (chrome://extensions → QuickCast →
-// Inspect views → offscreen.html). Safe to send from begin() (see below)
-// since the content-script widget is already mounted (still in its countdown
-// phase, but listening) well before begin() ever runs.
+// Inspect views → offscreen.html). Best-effort only, called from begin() —
+// see begin()'s own comment for why prepare()'s response (not this) is now
+// the primary, guaranteed-correct path.
 function sendUploadDisabled(recordingId: string, reason: string): void {
   console.error(LOG, '*** Drive upload disabled for this recording:', reason);
   const message: OffscreenUploadDisabledMessage = { type: 'offscreen:upload-disabled', recordingId, reason };
@@ -362,7 +350,7 @@ async function finalizeUpload(session: Session): Promise<void> {
   sendProgress(session, { force: true });
 }
 
-async function prepare(config: RecordingConfig, driveAuth: DriveAuth | undefined, folderId: string | undefined): Promise<void> {
+async function prepare(config: RecordingConfig, driveAuth: DriveAuth | undefined, folderId: string | undefined): Promise<{ uploadDisabledReason?: string }> {
   console.log(LOG, 'prepare() called', { config, hasDriveAuth: Boolean(driveAuth) });
   console.log(
     LOG,
@@ -399,13 +387,10 @@ async function prepare(config: RecordingConfig, driveAuth: DriveAuth | undefined
   console.log(LOG, 'Display media stream acquired', desktopStream.getVideoTracks().length, 'video track(s)');
   const desktopTrack = desktopStream.getVideoTracks()[0];
   // Everything that owns real hardware/capture and needs .stop() on cleanup
-  // — starts with the desktop track; webcam (if acquired) and mic tracks are
-  // pushed on below. Kept separate from `recorderVideoTrack`/`recorderTracks`
-  // (what MediaRecorder actually records), since compositing swaps in a
-  // synthetic canvas track as the recorder's video source while the real
-  // desktop/webcam tracks still need to be stopped directly (the desktop
-  // track in particular is also what the native "Stop sharing" listener
-  // below is attached to).
+  // — starts with the desktop track; mic track is pushed on below. This
+  // document does not open its own webcam (see the double-bubble fix), so
+  // desktopTrack is always both what gets recorded and what the native
+  // "Stop sharing" listener below is attached to.
   const tracks = [desktopTrack];
 
   let micTrack: MediaStreamTrack | undefined;
@@ -422,49 +407,23 @@ async function prepare(config: RecordingConfig, driveAuth: DriveAuth | undefined
     tracks.push(micTrack);
   }
 
-  // Webcam is best-effort: a permission denial, no camera present, or any
-  // other getUserMedia/compositor failure here must never block or fail the
-  // recording — screen (+ mic) still records exactly as it would with Cam
-  // off. Only a genuine success sets `compositor`, which is what makes
-  // MediaRecorder use the composited canvas as its video source instead of
-  // the raw desktop track.
-  let compositor: WebcamCompositor | undefined;
-  let camTrack: MediaStreamTrack | undefined;
+  // This document no longer opens its own webcam or composites a circle onto
+  // the recorded video (see the double-bubble fix: entrypoints/content/
+  // index.ts's own, entirely separate getUserMedia call drives the on-page
+  // bubble, and — since getDisplayMedia's captured pixels naturally include
+  // that bubble whenever the captured surface shows this tab — it's already
+  // the sole source of the webcam in the recording too. Compositing a second,
+  // independent camera capture on top of that produced the duplicate-bubble
+  // bug this replaces). recorderVideoTrack is therefore always the raw
+  // desktop track, webcam on or off — the only thing config.cam still
+  // affects here is nothing; it's read solely by the content script now.
   if (config.cam) {
-    console.log(LOG, '*** Webcam requested (config.cam=true) — attempting getUserMedia');
-    try {
-      const camStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      camTrack = camStream.getVideoTracks()[0];
-      tracks.push(camTrack);
-      console.log(LOG, '*** Webcam getUserMedia succeeded — starting compositor', { corner: config.webcamCorner });
-      compositor = await startWebcamCompositor(
-        desktopStream,
-        camStream,
-        config.webcamCorner ?? 'bottom-right',
-        config.frameRate ?? 30,
-      );
-      console.log(LOG, '*** Webcam compositor started successfully');
-    } catch (err) {
-      // Logged with name/message explicitly (not just describeError's
-      // combined string) so a permission dismissal is unmistakable in the
-      // offscreen document's own console (chrome://extensions → QuickCast →
-      // Inspect views → offscreen.html) — this is the exact same failure
-      // mode Phase 1 hit for the mic (an invisible page can't show a
-      // permission prompt, so Chrome silently dismisses it), now fixed the
-      // same way: the popup requests camera permission first, in a visible
-      // page, before this ever runs.
-      console.warn(LOG, '*** Webcam getUserMedia/compositor failed — continuing with screen-only recording', {
-        name: err instanceof Error ? err.name : undefined,
-        message: err instanceof Error ? err.message : String(err),
-      });
-      compositor = undefined;
-      camTrack = undefined;
-    }
+    console.log(LOG, 'Webcam requested (config.cam=true) — handled entirely by the content script\'s own on-page bubble; this document does not open a camera');
   } else {
     console.log(LOG, 'Webcam not requested (config.cam=false)');
   }
 
-  const recorderVideoTrack = compositor ? compositor.stream.getVideoTracks()[0] : desktopTrack;
+  const recorderVideoTrack = desktopTrack;
   const recorderTracks = [recorderVideoTrack, ...(micTrack ? [micTrack] : [])];
 
   const combined = new MediaStream(recorderTracks);
@@ -481,15 +440,11 @@ async function prepare(config: RecordingConfig, driveAuth: DriveAuth | undefined
     recorder.mimeType,
     'videoBitsPerSecond',
     config.videoBitsPerSecond ?? 2_500_000,
-    'webcamComposited',
-    Boolean(compositor),
   );
 
   const session: Session = {
     config,
     tracks,
-    compositor,
-    camTrack,
     recorder,
     chunkIndex: 0,
     endingByUs: false,
@@ -562,6 +517,13 @@ async function prepare(config: RecordingConfig, driveAuth: DriveAuth | undefined
 
   sessions.set(config.recordingId, session);
   console.log(LOG, 'Session prepared', config.recordingId);
+  // Known synchronously by this point (set either from !driveAuth above or
+  // the initiateResumableUpload() catch block just above) — returned
+  // directly rather than only reported later from begin() (see begin()'s own
+  // comment on why that used to be necessary and no longer is, now that
+  // there's no countdown-driven delay guaranteeing the widget's listener is
+  // already alive by the time begin() runs).
+  return { uploadDisabledReason: session.uploadDisabledReason };
 }
 
 function begin(recordingId: string): number {
@@ -570,12 +532,15 @@ function begin(recordingId: string): number {
   const startedAt = Date.now();
   session.recorder.start(1000);
   console.log(LOG, 'Recorder started', recordingId, 'at', startedAt);
-  // Reported here (rather than from prepare(), where the disable decision is
-  // actually made) because the widget only mounts and starts listening once
-  // widget:ensure-state arrives, moments after prepare() runs — a message
-  // sent that early would have no listener yet and be silently dropped. By
-  // the time begin() runs the countdown has already finished (the widget
-  // itself just sent widget:countdown-done), so it's guaranteed to be alive.
+  // Belt-and-suspenders only, not the primary path — prepare()'s own response
+  // now carries uploadDisabledReason directly, read and persisted into the
+  // session by background.ts's startRecording() *before* the widget is ever
+  // mounted (see prepare()'s own comment), so the widget's first ensure-state
+  // already reflects this correctly regardless of whether this broadcast
+  // reaches a live listener. No countdown exists anymore to guarantee the
+  // widget is already mounted by the time begin() runs, so this send is
+  // genuinely best-effort — kept only in case some later tab's widget
+  // somehow mounted without the persisted reason for another reason.
   if (session.uploadDisabledReason) {
     sendUploadDisabled(recordingId, session.uploadDisabledReason);
   }
@@ -593,21 +558,6 @@ function resume(recordingId: string) {
 function stopTracks(session: Session) {
   session.endingByUs = true;
   session.tracks.forEach((track) => track.stop());
-  // Stops the requestAnimationFrame draw loop and the composited canvas
-  // track — must happen alongside the real tracks above, not left running
-  // after the desktop/webcam streams it draws from are already stopped.
-  session.compositor?.stop();
-}
-
-// User closed the on-screen webcam bubble mid-recording (see
-// WidgetWebcamCloseClickedMessage) — stops just the camera (turns off the
-// light) and drops it from the composited video for the rest of the
-// recording; screen capture and the rest of the session are unaffected.
-function stopWebcam(recordingId: string): void {
-  const session = sessions.get(recordingId);
-  if (!session) return;
-  session.compositor?.disableWebcam();
-  session.camTrack?.stop();
 }
 
 async function waitForStop(recorder: MediaRecorder): Promise<void> {
@@ -743,8 +693,7 @@ type IncomingMessage =
   | OffscreenPauseMessage
   | OffscreenResumeMessage
   | OffscreenStopMessage
-  | OffscreenCancelMessage
-  | OffscreenWebcamStopMessage;
+  | OffscreenCancelMessage;
 
 chrome.runtime.onMessage.addListener((message: IncomingMessage, _sender, sendResponse) => {
   console.log(LOG, 'Received message', message.type);
@@ -752,8 +701,8 @@ chrome.runtime.onMessage.addListener((message: IncomingMessage, _sender, sendRes
     switch (message.type) {
       case 'offscreen:prepare':
         try {
-          await prepare(message.config, message.driveAuth, message.folderId);
-          sendResponse({ success: true });
+          const { uploadDisabledReason } = await prepare(message.config, message.driveAuth, message.folderId);
+          sendResponse({ success: true, uploadDisabledReason });
         } catch (err) {
           console.error(LOG, 'prepare() failed', err);
           sendResponse({ success: false, message: describeError(err) });
@@ -782,10 +731,6 @@ chrome.runtime.onMessage.addListener((message: IncomingMessage, _sender, sendRes
         break;
       case 'offscreen:cancel':
         await cancel(message.recordingId);
-        sendResponse({ success: true });
-        break;
-      case 'offscreen:webcam-stop':
-        stopWebcam(message.recordingId);
         sendResponse({ success: true });
         break;
     }

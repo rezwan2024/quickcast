@@ -44,7 +44,7 @@ Opens when the user clicks the extension icon or presses `Ctrl+Shift+0` / `Cmd+S
 - Recording mode picker: **Screen** (default), Window, Tab — one is always selected
 - Mic and Cam toggles — default ON, tap to disable
 - Upload destination — shows current default account, storage remaining. Tap to switch accounts. If only one account is connected, still shown but non-interactive.
-- **Start recording** button (red, primary, full-width) — clicking triggers Chrome's screen picker (or window/tab picker based on mode), then the countdown begins
+- **Start recording** button (red, primary, full-width) — clicking triggers Chrome's screen picker (or window/tab picker based on mode), then recording begins immediately
 - Shortcut hint at the bottom for discoverability
 
 ### 2. Recording widget (floating)
@@ -94,7 +94,7 @@ Full settings page with account management as the primary section.
 - **Connect another Google Drive account** — dashed button, opens the connect modal (screen 5)
 - Info box with link to setup guide
 - **Storage behavior** radio group: use default / ask each time / auto-switch when full
-- **Recording defaults** grid: quality (1080p/720p/480p), frame rate (24/30/60 fps), countdown (0–5 sec), webcam corner
+- **Recording defaults** grid: quality (1080p/720p/480p), frame rate (24/30/60 fps), webcam corner
 
 ### 5. Connect account modal
 
@@ -152,7 +152,7 @@ Final step of the connection flow. Opens on top of Settings.
 2. Main popup opens (screen 1)
 3. User optionally types a title, adjusts mic/cam, clicks **Start recording**
 4. Chrome native screen/window/tab picker appears
-5. User picks a source → 3-second countdown → recording begins
+5. User picks a source → recording begins immediately
 6. Popup closes automatically. Recording widget (screen 2) appears at bottom-left
 7. Chunks stream to Drive continuously in the background
 8. User does whatever they're demonstrating; talks over mic

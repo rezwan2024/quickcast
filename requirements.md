@@ -38,7 +38,7 @@ To keep scope tight, the tool does **not**:
 - Optional webcam bubble overlay (circular, draggable to any corner during recording)
 - No hard time limit; must reliably handle 30+ minute recordings
 - Local safety copy: recording is always saved locally in IndexedDB during capture, so a network drop never loses the video
-- Countdown before recording starts (3 seconds default, configurable)
+- Recording starts immediately on Start — no countdown
 - Controls during recording: pause, resume, stop, cancel/delete
 - Keyboard shortcut: `Ctrl+Shift+0` (Windows/Linux) / `Cmd+Shift+0` (Mac) opens the QuickCast popup. Chosen to avoid Chrome's reserved shortcuts (e.g., `Ctrl+Shift+R` is hardcoded for hard reload). Users can rebind it anytime via `chrome://extensions/shortcuts`.
 - Video format: WebM (VP9 + Opus) via `MediaRecorder`
@@ -107,7 +107,7 @@ Sharing permission is set to "anyone with the link can view" via Drive API.
 
 - Connected accounts (list, add, remove, set default, view storage per account)
 - Storage behavior (default account / ask each time / auto-switch when full)
-- Recording defaults (quality: 1080p/720p/480p, frame rate: 24/30/60 fps, countdown length, webcam corner position)
+- Recording defaults (quality: 1080p/720p/480p, frame rate: 24/30/60 fps, webcam corner position)
 - Keyboard shortcuts (view only for v1)
 - Appearance (light / dark / system)
 - Link to setup guide

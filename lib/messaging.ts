@@ -61,16 +61,6 @@ export interface OffscreenCancelMessage {
   type: 'offscreen:cancel';
   recordingId: string;
 }
-// Sent by background.ts when the user clicks the on-screen webcam bubble's
-// close button (see WidgetWebcamCloseClickedMessage below) — tells the
-// offscreen document to stop the webcam track and remove it from the
-// composited video for the rest of the recording. Screen capture is
-// unaffected.
-export interface OffscreenWebcamStopMessage {
-  type: 'offscreen:webcam-stop';
-  recordingId: string;
-}
-
 // offscreen -> background
 // Sent right after Stop, with the full locally-recorded video (assembled from
 // the IndexedDB chunks — see entrypoints/offscreen/main.ts's stopAndSave) —
@@ -167,8 +157,8 @@ export interface OffscreenUploadProgressMessage extends UploadProgress {
 // session failed to initiate) — surfaced in the widget itself so the reason
 // is visible without opening the offscreen document's devtools console. Safe
 // to send directly from begin() (see entrypoints/offscreen/main.ts) since the
-// content-script widget is already mounted (in its countdown phase, still
-// listening) by the time begin() runs.
+// content-script widget is already mounted and listening by the time begin()
+// runs.
 export interface OffscreenUploadDisabledMessage {
   type: 'offscreen:upload-disabled';
   recordingId: string;
@@ -218,16 +208,12 @@ export interface OffscreenUploadFinishedMessage {
 export interface WidgetEnsureStateMessage {
   type: 'widget:ensure-state';
   recordingId: string;
-  phase: 'countdown' | 'recording' | 'paused';
-  // Only meaningful while phase is 'countdown' — how many seconds this tab's
-  // own local 3-2-1 should start from. 0 once the recording has actually
-  // started (phase is 'recording'/'paused'), regardless of how much of the
-  // *original* tab's countdown is or isn't left — a tab that's only just
-  // being ensured has never run any part of a countdown itself.
-  countdownSeconds: number;
-  // Only set once offscreen:begin has actually resolved (phase is no longer
-  // 'countdown') — needed for a freshly-ensured tab to compute elapsed time
-  // immediately instead of starting from 00:00.
+  // Recording has always already started by the time this is sent (see
+  // background.ts's startRecording — offscreen:begin resolves before the
+  // original tab is ever ensured) — never a countdown-in-progress state.
+  phase: 'recording' | 'paused';
+  // Set from the moment recording starts — needed for a freshly-ensured tab
+  // to compute elapsed time immediately instead of starting from 00:00.
   startedAt?: number;
   // Whether the timer widget pill itself should be shown on this specific
   // tab — false when this tab isn't the original recording tab and the
@@ -247,18 +233,11 @@ export interface WidgetEnsureStateMessage {
   uploadProgress?: UploadProgress;
   uploadDisabledReason?: string;
 }
-export interface WidgetRecordingStartedMessage {
-  type: 'widget:recording-started';
-  recordingId: string;
-  startedAt: number;
-}
 // Broadcast to every tab in widgetTabIds when Pause/Resume is clicked from
-// *any one* of them — mirrors widget:recording-started's own broadcast
-// (background.ts's handleCountdownDone). Without this, only the clicking
-// tab's own optimistic setPhase() call ever reflected the new phase, and
-// every other tab kept showing the old one until it was torn down and
-// re-mounted (e.g. a manual reload, which re-fetches session.phase fresh via
-// widget:ensure-state).
+// *any one* of them. Without this, only the clicking tab's own optimistic
+// setPhase() call ever reflected the new phase, and every other tab kept
+// showing the old one until it was torn down and re-mounted (e.g. a manual
+// reload, which re-fetches session.phase fresh via widget:ensure-state).
 export interface WidgetPausedMessage {
   type: 'widget:paused';
   recordingId: string;
@@ -322,10 +301,6 @@ export interface ShareUploadProgressMessage extends UploadProgress {
 }
 
 // content (widget) -> background
-export interface WidgetCountdownDoneMessage {
-  type: 'widget:countdown-done';
-  recordingId: string;
-}
 export interface WidgetPauseClickedMessage {
   type: 'widget:pause-clicked';
   recordingId: string;
@@ -344,10 +319,11 @@ export interface WidgetCancelClickedMessage {
 }
 // Sent when the user clicks the on-screen webcam bubble's close (X) button
 // — the content script has already stopped its own local camera stream and
-// removed the bubble by the time this arrives; background just relays it to
-// the offscreen document (OffscreenWebcamStopMessage) to stop that
-// document's own, entirely separate camera track and drop the circle from
-// the composited video for the rest of the recording.
+// removed the bubble by the time this arrives; background relays
+// WidgetWebcamStopAllMessage to every other tab holding a bubble so they stop
+// theirs too. The offscreen document has no camera/compositor of its own to
+// stop — the on-page bubble is the sole source of the webcam in the recorded
+// video, so closing it here is the whole story.
 export interface WidgetWebcamCloseClickedMessage {
   type: 'widget:webcam-close-clicked';
   recordingId: string;
@@ -361,7 +337,6 @@ export type QuickCastMessage =
   | OffscreenResumeMessage
   | OffscreenStopMessage
   | OffscreenCancelMessage
-  | OffscreenWebcamStopMessage
   | OffscreenEndedMessage
   | OffscreenReadyMessage
   | OffscreenErrorMessage
@@ -374,7 +349,6 @@ export type QuickCastMessage =
   | ShareRequestLocalBlobMessage
   | ShareBlobDoneMessage
   | WidgetEnsureStateMessage
-  | WidgetRecordingStartedMessage
   | WidgetPausedMessage
   | WidgetResumedMessage
   | WidgetClosedMessage
@@ -385,7 +359,6 @@ export type QuickCastMessage =
   | ShareUploadReadyMessage
   | ShareUploadFailedMessage
   | ShareUploadProgressMessage
-  | WidgetCountdownDoneMessage
   | WidgetPauseClickedMessage
   | WidgetResumeClickedMessage
   | WidgetStopClickedMessage

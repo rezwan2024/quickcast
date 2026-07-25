@@ -1,4 +1,4 @@
-import type { Countdown, FrameRate, Quality, RecordingDefaults, WebcamCorner } from '@/lib/preferences';
+import type { FrameRate, Quality, RecordingDefaults, WebcamCorner } from '@/lib/preferences';
 
 const QUALITY_OPTIONS: { value: Quality; label: string }[] = [
   { value: '1080p', label: '1080p' },
@@ -9,13 +9,6 @@ const FRAME_RATE_OPTIONS: { value: FrameRate; label: string }[] = [
   { value: 24, label: '24 fps' },
   { value: 30, label: '30 fps' },
   { value: 60, label: '60 fps' },
-];
-const COUNTDOWN_OPTIONS: { value: Countdown; label: string }[] = [
-  { value: 0, label: 'None' },
-  { value: 1, label: '1 sec' },
-  { value: 2, label: '2 sec' },
-  { value: 3, label: '3 sec' },
-  { value: 5, label: '5 sec' },
 ];
 const WEBCAM_CORNER_OPTIONS: { value: WebcamCorner; label: string }[] = [
   { value: 'top-left', label: 'Top left' },
@@ -69,12 +62,6 @@ export function RecordingDefaultsSection({ value, onChange }: RecordingDefaultsS
           value={value.frameRate}
           options={FRAME_RATE_OPTIONS}
           onChange={(frameRate) => onChange({ ...value, frameRate })}
-        />
-        <SelectField
-          label="Countdown"
-          value={value.countdown}
-          options={COUNTDOWN_OPTIONS}
-          onChange={(countdown) => onChange({ ...value, countdown })}
         />
         <SelectField
           label="Webcam corner"

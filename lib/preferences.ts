@@ -45,20 +45,17 @@ export async function setStorageBehavior(behavior: StorageBehavior): Promise<voi
 
 export type Quality = '1080p' | '720p' | '480p';
 export type FrameRate = 24 | 30 | 60;
-export type Countdown = 0 | 1 | 2 | 3 | 5;
 export type WebcamCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 
 export interface RecordingDefaults {
   quality: Quality;
   frameRate: FrameRate;
-  countdown: Countdown;
   webcamCorner: WebcamCorner;
 }
 
 export const DEFAULT_RECORDING_DEFAULTS: RecordingDefaults = {
   quality: '1080p',
   frameRate: 30,
-  countdown: 3,
   webcamCorner: 'bottom-right',
 };
 

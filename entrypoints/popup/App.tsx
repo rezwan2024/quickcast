@@ -213,9 +213,9 @@ function App() {
     };
 
     // Fire-and-forget from here: background's own setup (offscreen doc,
-    // getDisplayMedia, the countdown) can take a few seconds, and design.md's
-    // flow wants the popup to close right away rather than sit open through
-    // all of that.
+    // getDisplayMedia) can take a few seconds, and design.md's flow wants
+    // the popup to close right away rather than sit open through all of
+    // that.
     console.log('[QuickCast][popup] Sending popup:start-recording', message);
     chrome.runtime.sendMessage(message);
     window.close();

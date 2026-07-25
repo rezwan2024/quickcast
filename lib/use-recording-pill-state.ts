@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
 import type {
   WidgetClosedMessage,
-  WidgetCountdownDoneMessage,
   WidgetPausedMessage,
-  WidgetRecordingStartedMessage,
   WidgetResumedMessage,
   WidgetUploadDisabledMessage,
   WidgetUploadProgressMessage,
@@ -17,11 +15,10 @@ import type { UploadProgress } from '@/types/recording';
 // future behavior change (a new upload-health state, a change to how Stop
 // works) only needs to be made once, instead of drifting between two
 // hand-copied implementations.
-export type RecordingPhase = 'countdown' | 'recording' | 'paused';
+export type RecordingPhase = 'recording' | 'paused';
 
 export interface UseRecordingPillStateProps {
   recordingId: string;
-  countdownSeconds: number;
   initialPhase?: RecordingPhase;
   initialStartedAt?: number;
   initialUploadProgress?: UploadProgress | null;
@@ -36,7 +33,6 @@ export interface UseRecordingPillStateProps {
 
 export interface UseRecordingPillStateResult {
   phase: RecordingPhase;
-  countdown: number;
   elapsed: number;
   uploadProgress: UploadProgress | null;
   uploadDisabledReason: string | null;
@@ -54,15 +50,13 @@ function sendToBackground(logPrefix: string, message: unknown): void {
 
 export function useRecordingPillState({
   recordingId,
-  countdownSeconds,
   initialPhase,
   initialStartedAt,
   initialUploadProgress,
   initialUploadDisabledReason,
   logPrefix,
 }: UseRecordingPillStateProps): UseRecordingPillStateResult {
-  const [phase, setPhase] = useState<RecordingPhase>(initialPhase ?? 'countdown');
-  const [countdown, setCountdown] = useState(countdownSeconds);
+  const [phase, setPhase] = useState<RecordingPhase>(initialPhase ?? 'recording');
   const [startedAt, setStartedAt] = useState<number | null>(initialStartedAt ?? null);
   const [elapsed, setElapsed] = useState(initialStartedAt ? Date.now() - initialStartedAt : 0);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(initialUploadProgress ?? null);
@@ -74,38 +68,17 @@ export function useRecordingPillState({
   }, [recordingId, logPrefix]);
 
   useEffect(() => {
-    // A widget/pill ensured after the recording already started mounts
-    // directly in 'recording'/'paused' with countdownSeconds: 0 — it never
-    // actually ran a countdown, so it must not send widget:countdown-done
-    // (that would tell background to call offscreen:begin a second time).
-    if (phase !== 'countdown') return;
-    if (countdown <= 0) {
-      const done: WidgetCountdownDoneMessage = { type: 'widget:countdown-done', recordingId };
-      sendToBackground(logPrefix, done);
-      return;
-    }
-    const timer = setTimeout(() => setCountdown((c) => c - 1), 1000);
-    return () => clearTimeout(timer);
-  }, [phase, countdown, recordingId, logPrefix]);
-
-  useEffect(() => {
     function onMessage(
-      message: WidgetRecordingStartedMessage | WidgetPausedMessage | WidgetResumedMessage | WidgetClosedMessage | WidgetUploadProgressMessage | WidgetUploadDisabledMessage | { type: string },
+      message: WidgetPausedMessage | WidgetResumedMessage | WidgetClosedMessage | WidgetUploadProgressMessage | WidgetUploadDisabledMessage | { type: string },
     ) {
       console.log(`${logPrefix} *** onMessage received`, message.type, message);
-      if (message.type === 'widget:recording-started') {
-        const msg = message as WidgetRecordingStartedMessage;
-        setPhase('recording');
-        setStartedAt(msg.startedAt);
-      } else if (message.type === 'widget:paused') {
+      if (message.type === 'widget:paused') {
         // Broadcast from background whenever Pause is clicked on *any* tab
         // (see handlePauseClicked) — every tab, not just the one that was
         // clicked, needs to reflect the new phase.
         setPhase('paused');
       } else if (message.type === 'widget:resumed') {
         setPhase('recording');
-      } else if (message.type === 'widget:close') {
-        setPhase('countdown');
       } else if (message.type === 'widget:upload-progress') {
         const msg = message as WidgetUploadProgressMessage;
         setUploadProgress({
@@ -130,7 +103,6 @@ export function useRecordingPillState({
 
   return {
     phase,
-    countdown,
     elapsed,
     uploadProgress,
     uploadDisabledReason,

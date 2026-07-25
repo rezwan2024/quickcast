@@ -50,7 +50,7 @@ Prove the recording pipeline works. Save the resulting WebM locally at the end �
 - On Start: call `chrome.desktopCapture.chooseDesktopMedia` (or `getDisplayMedia` in offscreen doc) for the chosen source
 - Get mic stream via `getUserMedia({ audio: true })`
 - Combine tracks into one stream, feed to `MediaRecorder` with `mimeType: 'video/webm;codecs=vp9,opus'` and `timeslice: 1000` (1 sec chunks)
-- Show 3-second countdown overlay before recording starts
+- Recording starts immediately on Start — no countdown
 - Chunks go into IndexedDB (using `idb` package) keyed by recording ID
 - Build the floating recording widget per `02-recording-widget.png` — inject as content script, draggable, always on top. For now: timer, pause/resume, stop, cancel. Upload indicators can be static placeholders.
 - On Stop: assemble chunks from IndexedDB into a Blob, trigger browser download of the `.webm` file
@@ -149,11 +149,11 @@ Now that the core flow is bulletproof, add the flexibility features.
 - Storage behavior setting: use default / ask each time / auto-switch when default is ≥90% full
   - "Ask each time": pre-recording popup shows a step to pick account
   - "Auto-switch": before starting, check default quota via Drive `about.get`; if ≥90%, silently switch to next connected account with room
-- Recording defaults: quality (1080p/720p/480p → maps to MediaRecorder `videoBitsPerSecond`: 3 Mbps / 1.5 Mbps / 800 Kbps), frame rate, countdown (0–5 sec), webcam corner
+- Recording defaults: quality (1080p/720p/480p → maps to MediaRecorder `videoBitsPerSecond`: 3 Mbps / 1.5 Mbps / 800 Kbps), frame rate, webcam corner
 - Webcam bubble: second `getUserMedia({ video: true })` for camera, render to a `<canvas>` composite in the offscreen doc — screen fullsize + webcam as circle in chosen corner, then pipe canvas.captureStream() to MediaRecorder. Draggable in the widget UI. Toggle to hide during recording.
 - Recent 20 recordings list: stored in `chrome.storage.local`. Popup's history icon opens a small list panel with title, timestamp, account, and copy-link button per row. "View all in Drive" link at the bottom opens the recordings root folder.
 
-**Done when:** users can connect multiple accounts, switch between them per recording, configure quality/countdown/webcam, and see their recent recordings in the popup.
+**Done when:** users can connect multiple accounts, switch between them per recording, configure quality/webcam, and see their recent recordings in the popup.
 
 ---
 

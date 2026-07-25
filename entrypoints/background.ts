@@ -23,7 +23,6 @@ import type {
   OffscreenUploadDisabledMessage,
   OffscreenUploadFinishedMessage,
   OffscreenUploadProgressMessage,
-  OffscreenWebcamStopMessage,
   ShareBlobDoneMessage,
   ShareRequestLocalBlobMessage,
   ShareUploadFailedMessage,
@@ -31,10 +30,8 @@ import type {
   ShareUploadReadyMessage,
   StartRecordingMessage,
   WidgetCancelClickedMessage,
-  WidgetCountdownDoneMessage,
   WidgetEnsureStateMessage,
   WidgetPauseClickedMessage,
-  WidgetRecordingStartedMessage,
   WidgetResumeClickedMessage,
   WidgetStopClickedMessage,
   WidgetUploadDisabledMessage,
@@ -119,6 +116,8 @@ async function sendMessageWithAck(
         new Promise((_, reject) => setTimeout(() => reject(new Error(`no ack within ${timeoutMs}ms`)), timeoutMs)),
       ]);
       console.log(LOG, `*** sendMessageWithAck: tab ${tabId} acked on attempt ${attempt}/${attempts}`, response);
+      // TEMPORARY — pill-visibility investigation. Remove once resolved.
+      console.log('[QC-DIAG][background] widget:ensure-state ack received', { tabId, attempt, message, response });
       return response;
     } catch (err) {
       console.warn(LOG, `*** sendMessageWithAck: tab ${tabId} attempt ${attempt}/${attempts} failed`, err instanceof Error ? err.message : err);
@@ -161,22 +160,19 @@ async function isInjectableTab(tabId: number): Promise<{ ok: boolean; url?: stri
 
 // Builds the single snapshot sent to any tab that needs to have (or
 // re-confirm) both the widget and, if applicable, its own webcam bubble.
-// phase/countdownSeconds branch on whether offscreen:begin has actually
-// resolved yet — before that, every tab that gets ensured runs its own
-// local 3-2-1 from the same countdownSeconds (see handleCountdownDone's own
-// idempotency for why more than one tab safely doing this is fine). `cam`
-// folds in webcamClosed so the content script only needs one boolean, not
-// two separate flags to reconcile.
+// Recording has always already started by the time this is ever called (see
+// startRecording — offscreen:begin resolves before the original tab is ever
+// ensured), so phase is always 'recording' or 'paused', never a
+// countdown-in-progress state. `cam` folds in webcamClosed so the content
+// script only needs one boolean, not two separate flags to reconcile.
 function buildEnsureStateMessage(
   session: RecordingSession,
   { showWidget, showWebcam, isOriginalTab }: { showWidget: boolean; showWebcam: boolean; isOriginalTab: boolean },
 ): WidgetEnsureStateMessage {
-  const started = session.startedAt !== undefined;
-  return {
+  const message: WidgetEnsureStateMessage = {
     type: 'widget:ensure-state',
     recordingId: session.recordingId,
-    phase: started ? session.phase ?? 'recording' : 'countdown',
-    countdownSeconds: started ? 0 : session.countdownSeconds,
+    phase: session.phase ?? 'recording',
     startedAt: session.startedAt,
     showWidget,
     isOriginalTab,
@@ -185,6 +181,9 @@ function buildEnsureStateMessage(
     uploadProgress: session.lastUploadProgress,
     uploadDisabledReason: session.lastUploadDisabledReason,
   };
+  // TEMPORARY — pill-visibility investigation. Remove once resolved.
+  console.log('[QC-DIAG][background] buildEnsureStateMessage — about to send', message);
+  return message;
 }
 
 // The one mechanism responsible for making sure a given tab has both the
@@ -482,7 +481,6 @@ async function startRecording(message: StartRecordingMessage): Promise<void> {
     tabId,
     config,
     widgetTabIds: [tabId],
-    countdownSeconds: recordingDefaults.countdown,
   });
 
   // Inject the widget content script right away, while activeTab's temporary
@@ -533,6 +531,30 @@ async function startRecording(message: StartRecordingMessage): Promise<void> {
   if (!prepareResult?.success) {
     throw new Error(prepareResult?.message ?? 'failed to prepare recording');
   }
+  // Persisted here — before the widget is ever mounted below — rather than
+  // waiting on begin()'s own best-effort offscreen:upload-disabled broadcast
+  // (see offscreen/main.ts's begin()/sendUploadDisabled comments): that
+  // broadcast has no guaranteed listener to reach without the countdown
+  // delay this project used to rely on for exactly that. prepare() already
+  // knows the final disabled reason (if any) by the time it responds, so
+  // reading it here means the very first ensure-state message the widget
+  // ever receives already carries it correctly, with no race at all.
+  if (prepareResult.uploadDisabledReason) {
+    await updateActiveSession({ lastUploadDisabledReason: prepareResult.uploadDisabledReason });
+  }
+
+  // No countdown — recording starts the instant prepare() succeeds, so by
+  // the time the widget is ever ensured on any tab (including the original,
+  // just below), session.startedAt is already set and buildEnsureStateMessage
+  // reports 'recording' from the very first message. No separate
+  // "started" transition/broadcast is needed.
+  console.log(LOG, 'Sending offscreen:begin');
+  const beginResult = await chrome.runtime.sendMessage({ type: 'offscreen:begin', recordingId: config.recordingId });
+  console.log(LOG, 'offscreen:begin result', beginResult);
+  if (!beginResult?.success) {
+    throw new Error(beginResult?.message ?? 'failed to begin recording');
+  }
+  await updateActiveSession({ startedAt: beginResult.startedAt, phase: 'recording' });
 
   // The content script was already injected above (before the slow
   // offscreen/getDisplayMedia setup, for the activeTab-timing reason
@@ -541,44 +563,6 @@ async function startRecording(message: StartRecordingMessage): Promise<void> {
   const freshSession = await getActiveSession();
   if (freshSession) await ensureWidgetOnTab(tabId, freshSession);
   console.log(LOG, 'Ensure-state message delivered to the original tab', tabId);
-}
-
-async function handleCountdownDone(message: WidgetCountdownDoneMessage): Promise<void> {
-  console.log(LOG, 'Received widget:countdown-done', message);
-  const session = await getActiveSession();
-  if (!session || session.recordingId !== message.recordingId) {
-    console.warn(LOG, 'No matching active session for countdown-done', message.recordingId);
-    return;
-  }
-  // More than one tab can now legitimately run its own local countdown
-  // simultaneously (any tab ensured while phase is still 'countdown' — see
-  // buildEnsureStateMessage) — only the first one to actually finish should
-  // call offscreen:begin; later ones are a no-op, not a second recording
-  // start.
-  if (session.startedAt !== undefined) {
-    console.log(LOG, 'widget:countdown-done arrived after the recording already started — ignoring (a second tab finished its own local countdown)', message.recordingId);
-    return;
-  }
-
-  console.log(LOG, 'Sending offscreen:begin');
-  const beginResult = await chrome.runtime.sendMessage({ type: 'offscreen:begin', recordingId: message.recordingId });
-  console.log(LOG, 'offscreen:begin result', beginResult);
-  if (!beginResult?.success) return;
-
-  await updateActiveSession({ startedAt: beginResult.startedAt, phase: 'recording' });
-
-  // Broadcast to every tab that currently has the widget, not just the
-  // original — any of them could have been showing their own local
-  // countdown (see the note above) and needs telling it's over.
-  const startedMessage: WidgetRecordingStartedMessage = {
-    type: 'widget:recording-started',
-    recordingId: message.recordingId,
-    startedAt: beginResult.startedAt,
-  };
-  await Promise.all(
-    session.widgetTabIds.map((tabId) => chrome.tabs.sendMessage(tabId, startedMessage).catch(() => undefined)),
-  );
-  console.log(LOG, 'Recording started', startedMessage);
 }
 
 async function handlePauseClicked(message: WidgetPauseClickedMessage): Promise<void> {
@@ -800,17 +784,14 @@ async function handleUploadDisabled(message: OffscreenUploadDisabledMessage): Pr
 // every tab that has a bubble now holds its own independent camera (see
 // lib/messaging.ts's WidgetEnsureStateMessage), "closing the webcam" for the
 // rest of the recording means stopping it *everywhere*, not just the tab it
-// was clicked in. Also tells the offscreen document to stop its own,
-// entirely separate camera track and drop the circle from the composited
-// video, and records webcamClosed so ensureWidgetOnTabIfActive/ensureWidgetOnTab
-// never (re)starts a bubble on any tab for the rest of this recording.
+// was clicked in. Records webcamClosed so ensureWidgetOnTabIfActive/
+// ensureWidgetOnTab never (re)starts a bubble on any tab for the rest of this
+// recording. The offscreen document has no camera/compositor of its own to
+// tell — the on-page bubble is the sole source of the webcam in the recorded
+// video (see the double-bubble fix), so there's nothing left to relay there.
 async function handleWebcamCloseClicked(message: WidgetWebcamCloseClickedMessage): Promise<void> {
   console.log(LOG, 'widget:webcam-close-clicked', message.recordingId);
   const session = await updateActiveSession({ webcamClosed: true });
-  const stopOffscreenMessage: OffscreenWebcamStopMessage = { type: 'offscreen:webcam-stop', recordingId: message.recordingId };
-  await chrome.runtime.sendMessage(stopOffscreenMessage).catch((err) =>
-    console.warn(LOG, 'Failed to relay offscreen:webcam-stop', err),
-  );
   if (session) {
     const stopAllMessage: WidgetWebcamStopAllMessage = { type: 'widget:webcam-stop-all', recordingId: message.recordingId };
     await Promise.all(
@@ -1028,9 +1009,6 @@ export default defineBackground(() => {
             sendResponse({ success: false, message: err instanceof Error ? err.message : 'unknown error' });
           },
         );
-        return true;
-      case 'widget:countdown-done':
-        handleCountdownDone(message).then(() => sendResponse({ success: true }));
         return true;
       case 'widget:pause-clicked':
         handlePauseClicked(message).then(() => sendResponse({ success: true }));

@@ -1,17 +1,1 @@
 @import 'tailwindcss';
-
-/* Countdown number pop-in, re-triggered each second via React key change. */
-@keyframes quickcast-countdown-pop {
-  from {
-    transform: scale(0.5);
-    opacity: 0;
-  }
-  to {
-    transform: scale(1);
-    opacity: 1;
-  }
-}
-
-.animate-quickcast-countdown-pop {
-  animation: quickcast-countdown-pop 300ms ease-out;
-}

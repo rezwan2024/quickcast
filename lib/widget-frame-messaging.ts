@@ -20,8 +20,7 @@ export interface WidgetFrameStateMessage {
   source: 'quickcast-parent';
   type: 'state';
   recordingId: string;
-  phase: 'countdown' | 'recording' | 'paused';
-  countdownSeconds: number;
+  phase: 'recording' | 'paused';
   startedAt?: number;
   uploadedBytes?: number;
   bufferedBytes?: number;

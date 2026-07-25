@@ -3,7 +3,14 @@ import { createShadowRootUi } from 'wxt/utils/content-script-ui/shadow-root';
 import { mountRecordingWidget } from '@/components/recording-widget';
 import { mountRecordingPill } from '@/components/recording-pill';
 import { mountWebcamBubble } from '@/components/webcam-bubble';
-import type { WidgetEnsureStateMessage, WidgetWebcamCloseClickedMessage } from '@/lib/messaging';
+import type {
+  WidgetEnsureStateMessage,
+  WidgetPausedMessage,
+  WidgetResumedMessage,
+  WidgetUploadDisabledMessage,
+  WidgetUploadProgressMessage,
+  WidgetWebcamCloseClickedMessage,
+} from '@/lib/messaging';
 import type { WebcamCorner } from '@/lib/preferences';
 import type { WidgetFrameStateMessage, WidgetFrameToParentMessage } from '@/lib/widget-frame-messaging';
 // Imported as a raw string (not cssInjectionMode: 'ui') and passed directly
@@ -144,6 +151,8 @@ export default defineContentScript({
     // inside handleEnsureState, not this flag, is what makes the SPA-wipe
     // case actually self-heal.
     const win = window as unknown as { __quickcastWidgetInjected?: boolean };
+    // TEMPORARY — pill-visibility investigation. Remove once resolved.
+    console.log('[QC-DIAG][content] content script main() invoked', { href: location.href, alreadyInjected: Boolean(win.__quickcastWidgetInjected) });
     if (win.__quickcastWidgetInjected) {
       console.log('[QuickCast][content] Content script already active in this tab, skipping re-init');
       return;
@@ -183,14 +192,6 @@ export default defineContentScript({
     // actually clearing (a real Stop waits on the Drive flush) could
     // resurrect the widget/bubble right after Stop had just removed them.
     let recordingEnded = false;
-    // Once this tab has seen an ensure-state message (or widget:recording-
-    // started) reporting anything other than 'countdown', remembered here so
-    // a later, stale-but-late ensure-state message reporting 'countdown'
-    // again (see handleEnsureState's own comment on this) can be recognized
-    // and ignored instead of demoting an already-recording widget back into
-    // showing a countdown it already finished.
-    let lastKnownNonCountdownPhase: 'recording' | 'paused' | null = null;
-    let lastKnownStartedAt: number | undefined;
     // Serializes handleEnsureState calls — on a genuinely busy single-page
     // app (confirmed via console logs: chrome.webNavigation.onHistoryStateUpdated
     // and chrome.tabs.onUpdated both firing repeatedly, in rapid succession,
@@ -255,15 +256,20 @@ export default defineContentScript({
     }
 
     // Last-resort fallback for a page whose CSS/DOM environment defeats the
-    // shadow-DOM widget outright (support.buddyboss.com, confirmed across 13
-    // rounds of increasingly targeted CSS fixes that never resolved it) —
-    // renders the timer pill inside a genuine <iframe>, a completely
-    // separate browsing context with its own document, immune to whatever
-    // about the host page's own CSS/DOM is interfering with content
-    // injected directly into it. Only activated if the shadow-DOM widget is
-    // still not actually visible 2 seconds after mounting (see
-    // watchWidgetVisibility's own setTimeout) — every other tab, where the
-    // shadow-DOM widget works fine, never touches this path at all.
+    // shadow-DOM widget outright (support.buddyboss.com, confirmed via a live
+    // console warning: the page's own script actively mutates the shadow
+    // host's attributes, undoing our forced styles — see
+    // watchWidgetVisibility) — renders the timer pill inside a genuine
+    // <iframe>, a completely separate browsing context with its own
+    // document, immune to whatever the host page's own script does to
+    // content injected directly into its DOM (a mutation there can't reach
+    // inside an iframe at all). Activated in two ways: immediately, the
+    // moment watchWidgetVisibility's own MutationObserver confirms the host
+    // page mutated the shadow host, or — for the different case where no
+    // mutation ever happens but the widget still never becomes visible for
+    // some other reason (round 13's finding) — after a 2-second no-mutation
+    // check. Every other tab, where the shadow-DOM widget works fine, never
+    // touches this path at all.
     let widgetIframe: HTMLIFrameElement | null = null;
     // Kept so a late `ready` handshake from the iframe (see its own
     // main.tsx/App.tsx) always has the current state to reply with, even if
@@ -322,7 +328,7 @@ export default defineContentScript({
     function watchWidgetVisibility(shadowHost: HTMLElement): void {
       widgetVisibilityObserver?.disconnect();
       const parent = shadowHost.parentNode;
-      const observer = new MutationObserver(() => {
+      const observer = new MutationObserver((mutations) => {
         if (!shadowHost.isConnected) {
           console.warn('[QuickCast][content] *** watchWidgetVisibility: shadow host was REMOVED from the DOM by something other than QuickCast itself — re-appending', {
             hadParent: parent !== null,
@@ -330,13 +336,39 @@ export default defineContentScript({
           (parent ?? document.body).appendChild(shadowHost);
           forceViewportAnchoring(shadowHost);
           if (ui) forceUiContainerVisibility(ui.uiContainer);
+          // Confirmed live on support.buddyboss.com: the host page actively
+          // fights the shadow host's own DOM presence/attributes. Re-applying
+          // our styles only wins if the page stops mutating — on a page that
+          // does this continuously, it never does. Don't wait for the
+          // 2-second no-mutation-detected timeout below (that timeout exists
+          // for a *different* symptom — no mutation at all, yet still
+          // invisible) — a confirmed mutation is itself proof the shadow-DOM
+          // approach won't win here, so fall back immediately.
+          activateIframeFallback();
           return;
         }
+        // FOUND: this callback previously ignored its own `mutations`
+        // argument entirely, so *any* childList mutation anywhere in the
+        // whole document (the `document.documentElement`/`subtree: true`
+        // observation below exists only to catch shadowHost being removed
+        // as a side effect of some ancestor's own re-render, via the
+        // isConnected check above) was being treated as "shadowHost's own
+        // attributes were mutated" — which is true of nearly every real
+        // website (lazy-loaded content, ads, any React re-render) and had
+        // nothing to do with our own element. That falsely triggered the
+        // iframe fallback (a deliberately minimal UI — no Cancel button, no
+        // upload status) on completely ordinary pages with no actual
+        // interference at all. Only the second `observer.observe(shadowHost,
+        // {attributes: true, ...})` call is ever relevant here — filter to
+        // mutation records that actually target shadowHost itself.
+        const hostAttributesMutated = mutations.some((m) => m.type === 'attributes' && m.target === shadowHost);
+        if (!hostAttributesMutated) return;
         const inlineStyle = shadowHost.getAttribute('style');
         console.warn('[QuickCast][content] *** watchWidgetVisibility: shadow host attributes were mutated by something other than QuickCast itself — re-applying forced styles', {
           styleAttribute: inlineStyle,
         });
         forceViewportAnchoring(shadowHost);
+        activateIframeFallback();
       });
       observer.observe(document.documentElement, { childList: true, subtree: true });
       observer.observe(shadowHost, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
@@ -365,6 +397,7 @@ export default defineContentScript({
             rootFound: root != null,
             rect,
           });
+          console.warn('[QC-DIAG][content] invisible widget detected (no mutation, still no visible box) — calling activateIframeFallback()', { lastFrameState });
           activateIframeFallback();
         }
       }, 2000);
@@ -474,12 +507,19 @@ export default defineContentScript({
     // signal for that case versus a normal, already-healthy re-check.
     async function handleEnsureState(message: WidgetEnsureStateMessage): Promise<void> {
       // Logged unconditionally, before anything else, so the exact state
-      // this tab was told to render is always visible — specifically
-      // whether phase/startedAt/countdownSeconds are what's expected for
-      // this tab (the original tab is the only one that ever receives this
-      // while phase is still 'countdown', since every other tab is only
-      // ever ensured after the recording has already started).
+      // this tab was told to render is always visible.
       console.log('[QuickCast][content] *** handleEnsureState received', message);
+      // TEMPORARY — pill-visibility investigation. Remove once resolved.
+      console.log('[QC-DIAG][content] widget:ensure-state received', {
+        recordingId: message.recordingId,
+        phase: message.phase,
+        startedAt: message.startedAt,
+        showWidget: message.showWidget,
+        isOriginalTab: message.isOriginalTab,
+        cam: message.cam,
+        currentUiExists: ui !== null,
+        currentUiConnected: ui?.shadowHost.isConnected ?? null,
+      });
 
       // FOUND: `recordingEnded` (and the other per-recording flags below)
       // were being set once, at Stop/Cancel, and then never reset for the
@@ -502,8 +542,20 @@ export default defineContentScript({
         });
         recordingEnded = false;
         webcamManuallyClosed = false;
-        lastKnownNonCountdownPhase = null;
-        lastKnownStartedAt = undefined;
+        // FOUND: the iframe fallback's own state was missing from this
+        // reset, unlike the two flags above — if the *previous* recording
+        // ever activated it (which, per widgetHealthy's own check just below,
+        // only ever happens on a page that genuinely mutates the shadow
+        // host — in practice just support.buddyboss.com), widgetIframe
+        // stayed non-null into this new recording. widgetHealthy then reads
+        // "iframe already active" as true and skips the entire mount block
+        // below outright — no shadow-DOM attempt, no fresh iframe-fallback
+        // chance, nothing — while the webcam bubble (fully independent code)
+        // keeps working fine, exactly matching "widget missing on the second
+        // recording, same tab, only on this one site." removeIframeFallback()
+        // is a safe no-op if there's nothing to remove.
+        removeIframeFallback();
+        lastFrameState = null;
       }
       currentRecordingId = message.recordingId;
 
@@ -518,38 +570,44 @@ export default defineContentScript({
         return;
       }
 
-      // Once this tab has seen the recording genuinely start, never let a
-      // later ensure-state message demote it back to 'countdown' — with
-      // several independent Chrome events (onActivated/onUpdated/
-      // onHistoryStateUpdated) each able to trigger their own
-      // ensureWidgetOnTab call on the background side, and no cross-call
-      // lock there (only this tab's own ensureStateQueue serializes calls
-      // that arrive here, not the order background dispatched them), a
-      // message built from session state *before* offscreen:begin resolved
-      // can physically arrive here after a later message built *after* it
-      // resolved — stale-but-late, not just stale. If that stale message
-      // then happens to trigger a remount (this tab's widget briefly
-      // unhealthy for any reason), it would otherwise reset a
-      // known-recording tab back into showing a countdown it already
-      // finished.
-      const effectivePhase = message.phase === 'countdown' && lastKnownNonCountdownPhase !== null ? lastKnownNonCountdownPhase : message.phase;
-      const effectiveStartedAt = message.phase === 'countdown' && lastKnownNonCountdownPhase !== null ? lastKnownStartedAt : message.startedAt;
-      if (effectivePhase !== message.phase) {
-        console.log('[QuickCast][content] *** handleEnsureState: ignoring a stale countdown demotion, using last-known phase instead', {
-          messagePhase: message.phase,
-          effectivePhase,
-          effectiveStartedAt,
-        });
-      }
-      if (effectivePhase !== 'countdown') {
-        lastKnownNonCountdownPhase = effectivePhase;
-        lastKnownStartedAt = effectiveStartedAt;
-      }
-
       if (message.showWidget) {
-        const widgetHealthy = ui !== null && ui.shadowHost.isConnected;
+        // Kept current on every ensure-state regardless of whether the
+        // shadow-DOM widget is (still) healthy — the iframe fallback can
+        // activate at any point after this (immediately on a confirmed
+        // mutation, or after the 2s no-mutation check), and needs a
+        // ready-to-send snapshot whenever that happens, not just at the
+        // first mount.
+        lastFrameState = {
+          source: 'quickcast-parent',
+          type: 'state',
+          recordingId: message.recordingId,
+          phase: message.phase,
+          startedAt: message.startedAt,
+          uploadedBytes: message.uploadProgress?.uploadedBytes,
+          bufferedBytes: message.uploadProgress?.bufferedBytes,
+          speedBytesPerSec: message.uploadProgress?.speedBytesPerSec,
+          uploadHealth: message.uploadProgress?.health,
+          uploadDisabledReason: message.uploadDisabledReason,
+        };
+        postStateToIframe();
+
+        // Once the iframe fallback has taken over, never attempt to
+        // (re)mount the shadow-DOM widget again for the rest of this
+        // recording — activateIframeFallback() already set `ui = null` via
+        // removeWidgetUi(), so without this check every later ensure-state
+        // (and this page fires plenty — onHistoryStateUpdated/onUpdated
+        // both trigger repeatedly) would read that as "not healthy" and try
+        // to recreate the very shadow-DOM widget just proven not to work
+        // here, mounting it invisibly alongside the already-working iframe.
+        const widgetHealthy = widgetIframe !== null || (ui !== null && ui.shadowHost.isConnected);
         if (!widgetHealthy) {
           removeWidgetUi();
+          // TEMPORARY — pill-visibility investigation. Remove once resolved.
+          console.log('[QC-DIAG][content] mount-branch decision', {
+            isOriginalTab: message.isOriginalTab,
+            willMount: message.isOriginalTab ? 'RecordingPill' : 'RecordingWidget',
+            cssApplied: message.isOriginalTab ? 'none (inline styles only)' : 'widgetCss (Tailwind)',
+          });
           // Round 16: the original tab gets RecordingPill (plain inline
           // styles, no Tailwind classNames, no external stylesheet — see its
           // own header comment) instead of the Tailwind-classed
@@ -569,17 +627,15 @@ export default defineContentScript({
               message.isOriginalTab
                 ? mountRecordingPill(container, {
                     recordingId: message.recordingId,
-                    countdownSeconds: message.countdownSeconds,
-                    initialPhase: effectivePhase,
-                    initialStartedAt: effectiveStartedAt,
+                    initialPhase: message.phase,
+                    initialStartedAt: message.startedAt,
                     initialUploadProgress: message.uploadProgress ?? null,
                     initialUploadDisabledReason: message.uploadDisabledReason ?? null,
                   })
                 : mountRecordingWidget(container, {
                     recordingId: message.recordingId,
-                    countdownSeconds: message.countdownSeconds,
-                    initialPhase: effectivePhase,
-                    initialStartedAt: effectiveStartedAt,
+                    initialPhase: message.phase,
+                    initialStartedAt: message.startedAt,
                     initialUploadProgress: message.uploadProgress ?? null,
                     initialUploadDisabledReason: message.uploadDisabledReason ?? null,
                   }),
@@ -589,19 +645,57 @@ export default defineContentScript({
           forceUiContainerVisibility(ui.uiContainer);
           watchWidgetVisibility(ui.shadowHost);
           console.log('[QuickCast][content] Widget (re)mounted', {
-            phase: effectivePhase,
-            countdownSeconds: message.countdownSeconds,
-            startedAt: effectiveStartedAt,
+            phase: message.phase,
+            startedAt: message.startedAt,
             recordingId: message.recordingId,
             shadowHostConnected: ui.shadowHost.isConnected,
             shadowHostRect: ui.shadowHost.getBoundingClientRect(),
           });
+          // TEMPORARY — pill-visibility investigation. Remove once resolved.
+          // Tests the leading hypothesis directly: shadowHost is forced to
+          // position:fixed, but position:fixed only resolves against the
+          // real viewport if NO ancestor between <body> and shadowHost
+          // establishes its own containing block (transform/filter/
+          // perspective/will-change/contain). shadowHost's parentElement is
+          // *always* document.body in this wxt version (confirmed by reading
+          // node_modules/@webext-core/isolated-element's source — there is
+          // no separate wrapper div here despite forceViewportAnchoring's own
+          // comment describing one), and forceViewportAnchoring deliberately
+          // never restyles document.body/documentElement — so if either of
+          // them has one of these properties on this page, nothing in this
+          // codebase currently corrects for it.
+          (() => {
+            const hostStyle = getComputedStyle(ui!.shadowHost);
+            const bodyStyle = getComputedStyle(document.body);
+            const htmlStyle = getComputedStyle(document.documentElement);
+            const relevant = (s: CSSStyleDeclaration) => ({
+              transform: s.transform,
+              filter: s.filter,
+              perspective: s.perspective,
+              willChange: s.willChange,
+              contain: s.contain,
+            });
+            console.log('[QC-DIAG][content] containing-block diagnostic', {
+              shadowHostParentIsBody: ui!.shadowHost.parentElement === document.body,
+              shadowHostComputed: {
+                position: hostStyle.position,
+                display: hostStyle.display,
+                visibility: hostStyle.visibility,
+                opacity: hostStyle.opacity,
+                zIndex: hostStyle.zIndex,
+                ...relevant(hostStyle),
+              },
+              bodyComputed: relevant(bodyStyle),
+              htmlComputed: relevant(htmlStyle),
+            });
+          })();
         } else {
-          console.log('[QuickCast][content] *** handleEnsureState: widget already healthy, mountRecordingWidget NOT called — new phase/startedAt/countdownSeconds from this message are NOT passed to the existing component', {
-            phase: message.phase,
-            countdownSeconds: message.countdownSeconds,
-            startedAt: message.startedAt,
-          });
+          console.log(
+            widgetIframe
+              ? '[QuickCast][content] *** handleEnsureState: iframe fallback already active, not attempting the shadow-DOM widget — lastFrameState/postStateToIframe() above already delivered this update'
+              : '[QuickCast][content] *** handleEnsureState: widget already healthy, mountRecordingWidget NOT called — new phase/startedAt from this message are NOT passed to the existing component',
+            { phase: message.phase, startedAt: message.startedAt },
+          );
         }
       } else if (ui) {
         // Not the original tab, and "Show recording widget on any tab" is
@@ -678,11 +772,85 @@ export default defineContentScript({
         // actually cleared) from resurrecting the widget/bubble here.
         recordingEnded = true;
         removeWidgetUi();
+        removeIframeFallback();
         stopWebcamStream();
         removeWebcamBubbleUi();
         console.log('[QuickCast][content] Widget removed');
         sendResponse({ success: true });
+        return;
       }
+
+      // Ongoing state updates for a tab whose widget has already been
+      // ensured at least once — keeps lastFrameState current (so the iframe
+      // fallback, if/when it activates, always has fresh data) and, if the
+      // iframe is already showing, pushes the update straight to it. These
+      // are only ever handled here (not inside handleEnsureState, which only
+      // runs on widget:ensure-state) since they can arrive at any point
+      // during the recording, independent of any ensure-state message.
+      if (message.type === 'widget:paused' || message.type === 'widget:resumed') {
+        if (lastFrameState) {
+          lastFrameState = { ...lastFrameState, phase: message.type === 'widget:paused' ? 'paused' : 'recording' };
+          postStateToIframe();
+        }
+        sendResponse({ success: true });
+        return;
+      }
+
+      if (message.type === 'widget:upload-progress') {
+        const msg = message as WidgetUploadProgressMessage;
+        if (lastFrameState) {
+          lastFrameState = {
+            ...lastFrameState,
+            uploadedBytes: msg.uploadedBytes,
+            bufferedBytes: msg.bufferedBytes,
+            speedBytesPerSec: msg.speedBytesPerSec,
+            uploadHealth: msg.health,
+          };
+          postStateToIframe();
+        }
+        sendResponse({ success: true });
+        return;
+      }
+
+      if (message.type === 'widget:upload-disabled') {
+        const msg = message as WidgetUploadDisabledMessage;
+        if (lastFrameState) {
+          lastFrameState = { ...lastFrameState, uploadDisabledReason: msg.reason };
+          postStateToIframe();
+        }
+        sendResponse({ success: true });
+        return;
+      }
+    });
+
+    // Receives the widget-frame iframe's own handshake/button-click messages
+    // (see lib/widget-frame-messaging.ts and entrypoints/widget-frame/App.tsx)
+    // — plain window.postMessage, not chrome.runtime messaging, since the
+    // iframe is a real separate browsing context (its own window), and this
+    // is the only channel that reaches directly into it from here without
+    // round-tripping through the background service worker. Previously
+    // absent entirely, which meant postStateToIframe()/removeIframeFallback()
+    // had no caller and the iframe's own `ready` ping (sent repeatedly for
+    // its first 3 seconds — see its own App.tsx) never got a reply, and its
+    // Pause/Resume/Stop/Cancel clicks went nowhere.
+    window.addEventListener('message', (event: MessageEvent) => {
+      const data = event.data as WidgetFrameToParentMessage | { source?: string };
+      if (!data || data.source !== 'quickcast-widget-frame') return;
+      const msg = data as WidgetFrameToParentMessage;
+      if (msg.type === 'ready') {
+        postStateToIframe();
+        return;
+      }
+      // The iframe's own App.tsx already applies an optimistic local phase
+      // update before sending pause-clicked/resume-clicked — this just
+      // relays the actual action to background, exactly like
+      // lib/use-recording-pill-state.ts's onPauseClick/onResumeClick/
+      // onStopClick/onCancelClick do for the shadow-DOM widget. The iframe's
+      // own message types (pause-clicked, etc.) are unprefixed — background's
+      // message switch expects the widget:-prefixed versions.
+      const backgroundMessageType = `widget:${msg.type}` as const;
+      console.log('[QuickCast][content] Received from widget-frame iframe, relaying', backgroundMessageType);
+      void chrome.runtime.sendMessage({ type: backgroundMessageType, recordingId: msg.recordingId });
     });
   },
 });

@@ -75,7 +75,6 @@ function UploadStatus({ progress, disabledReason }: { progress: UploadProgress |
 
 export interface RecordingPillProps {
   recordingId: string;
-  countdownSeconds: number;
   initialPhase?: RecordingPhase;
   initialStartedAt?: number;
   initialUploadProgress?: UploadProgress | null;
@@ -84,15 +83,13 @@ export interface RecordingPillProps {
 
 export function RecordingPill({
   recordingId,
-  countdownSeconds,
   initialPhase,
   initialStartedAt,
   initialUploadProgress,
   initialUploadDisabledReason,
 }: RecordingPillProps) {
-  const { phase, countdown, elapsed, uploadProgress, uploadDisabledReason, stopping, onPauseClick, onResumeClick, onStopClick, onCancelClick } = useRecordingPillState({
+  const { phase, elapsed, uploadProgress, uploadDisabledReason, stopping, onPauseClick, onResumeClick, onStopClick, onCancelClick } = useRecordingPillState({
     recordingId,
-    countdownSeconds,
     initialPhase,
     initialStartedAt,
     initialUploadProgress,
@@ -100,6 +97,11 @@ export function RecordingPill({
     logPrefix: '[QuickCast][pill]',
   });
   const { position, onPointerDown, onPointerMove, onPointerUp } = useDraggablePosition(PILL_POSITION_STORAGE_KEY);
+
+  // TEMPORARY — pill-visibility investigation. Remove once resolved. Fires
+  // on every render, including the first — distinguishes "React never
+  // rendered this" from "rendered but not visible on screen."
+  console.log('[QC-DIAG][pill] RecordingPill rendering', { phase, elapsed, position });
 
   const buttonStyle = (disabled: boolean): React.CSSProperties => ({
     display: 'inline-flex',
@@ -113,47 +115,6 @@ export function RecordingPill({
     opacity: disabled ? 0.4 : 1,
     color: '#ffffff',
   });
-
-  if (phase === 'countdown') {
-    return (
-      <div
-        data-quickcast-root="true"
-        style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          zIndex: 2147483647,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          pointerEvents: 'auto',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-          <div
-            style={{
-              display: 'flex',
-              height: 144,
-              width: 144,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 9999,
-              backgroundColor: '#1a1d24',
-              boxShadow: '0 20px 40px rgba(0,0,0,0.4)',
-            }}
-          >
-            <span style={{ fontSize: 64, fontWeight: 700, color: '#ffffff' }}>{countdown}</span>
-          </div>
-          <p style={{ fontSize: 18, fontWeight: 500, color: '#ffffff', margin: 0 }}>Recording starts in {countdown}…</p>
-        </div>
-      </div>
-    );
-  }
 
   // Anchors to the viewport's bottom-left via `bottom` (self-correcting on
   // any screen size, unlike a one-time top calculation from
@@ -229,7 +190,15 @@ export function RecordingPill({
 }
 
 export function mountRecordingPill(container: HTMLElement, props: RecordingPillProps): Root {
+  // TEMPORARY — pill-visibility investigation. Remove once resolved.
+  console.log('[QC-DIAG][pill] mountRecordingPill() called', {
+    recordingId: props.recordingId,
+    initialPhase: props.initialPhase,
+    containerConnected: container.isConnected,
+    containerTagName: container.tagName,
+  });
   const root = createRoot(container);
   root.render(<RecordingPill {...props} />);
+  console.log('[QC-DIAG][pill] mountRecordingPill() — root.render() called (React commit is async; this does not confirm paint)');
   return root;
 }

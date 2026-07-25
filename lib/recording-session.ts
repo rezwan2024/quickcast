@@ -24,13 +24,8 @@ export interface RecordingSession {
   // chrome.tabs.onActivated in background.ts). Stop/progress/disabled
   // messages go to all of these, not just the original tab.
   widgetTabIds: number[];
-  // The countdown length chosen in Settings for this recording — stored
-  // here (not just passed once to the original tab) so any tab ensured
-  // while still counting down (see ensureWidgetOnActiveTab in
-  // background.ts) runs its own local 3-2-1 from the same starting number.
-  countdownSeconds: number;
   // Tracked so a tab visited mid-recording can mount the widget already
-  // showing the right phase, instead of always starting a fresh countdown.
+  // showing the right phase (recording vs. paused).
   phase?: 'recording' | 'paused';
   lastUploadProgress?: UploadProgress;
   lastUploadDisabledReason?: string;

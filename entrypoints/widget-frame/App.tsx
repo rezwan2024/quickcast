@@ -9,9 +9,6 @@ import type { WidgetFrameStateMessage, WidgetFrameToParentMessage } from '@/lib/
 // so nothing about the host page's CSS can reach in and hide it the way it
 // apparently can for content injected directly into the host page's own DOM.
 // Deliberately minimal compared to components/recording-widget.tsx: no
-// countdown overlay (by the time this fallback activates, 2 seconds have
-// already passed since mount, so the countdown — 0-5s by Settings' own
-// range — is over or nearly over on any tab that needed this at all), no
 // drag-to-reposition, no upload-progress detail. Just enough to show the
 // recording is happening and let the user Pause/Resume/Stop it.
 function formatElapsed(ms: number): string {
@@ -27,7 +24,7 @@ function postToParent(message: WidgetFrameToParentMessage): void {
 
 export default function App() {
   const [recordingId, setRecordingId] = useState<string | null>(null);
-  const [phase, setPhase] = useState<'countdown' | 'recording' | 'paused'>('countdown');
+  const [phase, setPhase] = useState<'recording' | 'paused'>('recording');
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [stopping, setStopping] = useState(false);

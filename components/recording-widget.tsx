@@ -65,11 +65,6 @@ function UploadStatus({ progress, disabledReason }: { progress: UploadProgress |
 
 interface WidgetProps {
   recordingId: string;
-  countdownSeconds: number;
-  // Set when mounting into a tab already past the countdown (see
-  // widget:ensure-state in entrypoints/content/index.ts) — skips the
-  // countdown and starts already reflecting the recording's real state
-  // instead of a fresh countdown/zeroed timer/no upload status.
   initialPhase?: RecordingPhase;
   initialStartedAt?: number;
   initialUploadProgress?: UploadProgress | null;
@@ -78,15 +73,13 @@ interface WidgetProps {
 
 function RecordingWidget({
   recordingId,
-  countdownSeconds,
   initialPhase,
   initialStartedAt,
   initialUploadProgress,
   initialUploadDisabledReason,
 }: WidgetProps) {
-  const { phase, countdown, elapsed, uploadProgress, uploadDisabledReason, stopping, onPauseClick, onResumeClick, onStopClick, onCancelClick } = useRecordingPillState({
+  const { phase, elapsed, uploadProgress, uploadDisabledReason, stopping, onPauseClick, onResumeClick, onStopClick, onCancelClick } = useRecordingPillState({
     recordingId,
-    countdownSeconds,
     initialPhase,
     initialStartedAt,
     initialUploadProgress,
@@ -95,29 +88,8 @@ function RecordingWidget({
   });
   const { position, onPointerDown, onPointerMove, onPointerUp } = useDraggablePosition(POSITION_STORAGE_KEY);
 
-  // A large, impossible-to-miss overlay — distinct from the compact pill used
-  // once recording actually starts. The previous version showed the countdown
-  // as small inline text inside the same small pill, which was easy to miss
-  // entirely while Chrome's own native source-picker/share-indicator are also
-  // competing for attention at that exact moment.
-  if (phase === 'countdown') {
-    return (
-      <div
-        data-quickcast-root="true"
-        className="fixed inset-0 flex items-center justify-center bg-black/50 font-sans"
-        style={{ zIndex: 2147483647, pointerEvents: 'auto' }}
-      >
-        <div className="flex flex-col items-center gap-4">
-          <div className="flex h-36 w-36 items-center justify-center rounded-full bg-[#1a1d24] shadow-2xl">
-            <span key={countdown} className="animate-quickcast-countdown-pop text-7xl font-bold text-white tabular-nums">
-              {countdown}
-            </span>
-          </div>
-          <p className="text-lg font-medium text-white">Recording starts in {countdown}…</p>
-        </div>
-      </div>
-    );
-  }
+  // TEMPORARY — pill-visibility investigation. Remove once resolved.
+  console.log('[QC-DIAG][widget] RecordingWidget rendering', { phase, elapsed, position });
 
   // Default anchors to the viewport's bottom-left using `bottom`, not a
   // `top` computed from window.innerHeight — position: fixed with `bottom`
@@ -133,7 +105,7 @@ function RecordingWidget({
     <div
       data-quickcast-root="true"
       style={style}
-      className="flex select-none items-center gap-2 rounded-full bg-[#1a1d24] px-3 py-2 font-sans text-white shadow-lg"
+      className="flex select-none items-center gap-2 rounded-full bg-[#1a1d24] px-3 py-2.5 font-sans text-white shadow-lg"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -169,6 +141,13 @@ function RecordingWidget({
 }
 
 export function mountRecordingWidget(container: HTMLElement, props: WidgetProps): Root {
+  // TEMPORARY — pill-visibility investigation. Remove once resolved.
+  console.log('[QC-DIAG][widget] mountRecordingWidget() called', {
+    recordingId: props.recordingId,
+    initialPhase: props.initialPhase,
+    containerConnected: container.isConnected,
+    containerTagName: container.tagName,
+  });
   const root = createRoot(container);
   root.render(<RecordingWidget {...props} />);
   return root;
