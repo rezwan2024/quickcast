@@ -386,6 +386,23 @@ async function prepare(config: RecordingConfig, driveAuth: DriveAuth | undefined
   }
   console.log(LOG, 'Display media stream acquired', desktopStream.getVideoTracks().length, 'video track(s)');
   const desktopTrack = desktopStream.getVideoTracks()[0];
+  // TEMPORARY — Mac zero-byte-recording investigation. Remove once resolved.
+  // If the track itself never actually delivers frames (e.g. an OS-level
+  // screen-capture block that still lets getDisplayMedia resolve), this is
+  // the most direct place to see it: readyState/muted report the track's
+  // own belief about its state, and getSettings() reports the actual
+  // negotiated width/height/frameRate — 0 or missing values here would mean
+  // the track was never really live, independent of anything MediaRecorder
+  // does with it afterward.
+  console.log('[QC-DIAG][offscreen] desktopTrack diagnostic', {
+    readyState: desktopTrack.readyState,
+    muted: desktopTrack.muted,
+    enabled: desktopTrack.enabled,
+    settings: desktopTrack.getSettings(),
+  });
+  desktopTrack.addEventListener('mute', () => console.warn('[QC-DIAG][offscreen] desktopTrack muted event fired'));
+  desktopTrack.addEventListener('unmute', () => console.log('[QC-DIAG][offscreen] desktopTrack unmuted event fired'));
+  desktopTrack.addEventListener('ended', () => console.warn('[QC-DIAG][offscreen] desktopTrack ended event fired (diagnostic listener)'));
   // Everything that owns real hardware/capture and needs .stop() on cleanup
   // — starts with the desktop track; mic track is pushed on below. This
   // document does not open its own webcam (see the double-bubble fix), so
@@ -479,6 +496,13 @@ async function prepare(config: RecordingConfig, driveAuth: DriveAuth | undefined
   }
 
   recorder.ondataavailable = (event) => {
+    // TEMPORARY — Mac zero-byte-recording investigation. Remove once
+    // resolved. Logged unconditionally, before the size check below —
+    // 'Chunk received' only ever fires for event.data.size > 0, so it can't
+    // tell "ondataavailable never fired at all" apart from "it fired
+    // regularly, every time with an empty Blob" — two very different root
+    // causes. This log fires either way.
+    console.log('[QC-DIAG][offscreen] ondataavailable fired', { size: event.data.size, type: event.data.type, recorderState: recorder.state });
     if (event.data.size > 0) {
       console.log(LOG, 'Chunk received', session.chunkIndex, event.data.size, 'bytes');
       void addChunk(config.recordingId, session.chunkIndex++, event.data);
@@ -532,6 +556,8 @@ function begin(recordingId: string): number {
   const startedAt = Date.now();
   session.recorder.start(1000);
   console.log(LOG, 'Recorder started', recordingId, 'at', startedAt);
+  // TEMPORARY — Mac zero-byte-recording investigation. Remove once resolved.
+  console.log('[QC-DIAG][offscreen] recorder.state right after start()', session.recorder.state);
   // Belt-and-suspenders only, not the primary path — prepare()'s own response
   // now carries uploadDisabledReason directly, read and persisted into the
   // session by background.ts's startRecording() *before* the widget is ever
