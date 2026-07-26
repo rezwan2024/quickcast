@@ -15,7 +15,15 @@ import { HistoryPanel } from '@/components/history-panel';
 import type { RecordingMode } from '@/types/recording';
 import type { StartRecordingMessage } from '@/lib/messaging';
 import { getAllAccounts } from '@/lib/accounts-storage';
-import { clearSelectedAccountId, getSelectedAccountId, setSelectedAccountId } from '@/lib/preferences';
+import {
+  clearSelectedAccountId,
+  getCamEnabled,
+  getMicEnabled,
+  getSelectedAccountId,
+  setCamEnabled,
+  setMicEnabled,
+  setSelectedAccountId,
+} from '@/lib/preferences';
 import { formatBytes } from '@/lib/format';
 import type { Account } from '@/types/account';
 
@@ -91,6 +99,10 @@ function App() {
 
   useEffect(() => {
     (async () => {
+      const [micEnabled, camEnabled] = await Promise.all([getMicEnabled(), getCamEnabled()]);
+      setMic(micEnabled);
+      setCam(camEnabled);
+
       const accountsById = await getAllAccounts();
       const list = Object.values(accountsById);
       setAccounts(list);
@@ -118,6 +130,19 @@ function App() {
     // can close on blur (clicking away, etc.) at any point before Start is
     // clicked, which would otherwise silently lose the user's pick.
     void setSelectedAccountId(id);
+  }
+
+  // Same reasoning as handleAccountChange — persisted immediately so the
+  // choice survives the popup closing (it previously reset to on/on every
+  // time the popup reopened, even right after explicitly toggling one off).
+  function handleMicToggle(next: boolean) {
+    setMic(next);
+    void setMicEnabled(next);
+  }
+
+  function handleCamToggle(next: boolean) {
+    setCam(next);
+    void setCamEnabled(next);
   }
 
   async function handleStart() {
@@ -319,14 +344,14 @@ function App() {
               <IconMicrophone size={18} stroke={1.75} className="text-[#10b981]" />
               Mic
             </span>
-            <Toggle checked={mic} onChange={setMic} />
+            <Toggle checked={mic} onChange={handleMicToggle} />
           </div>
           <div className="flex flex-1 items-center justify-between rounded-lg border border-[#e5e5e5] px-3 py-2.5">
             <span className="flex items-center gap-2 text-sm text-[#1a1d24]">
               <IconCamera size={18} stroke={1.75} className="text-[#10b981]" />
               Cam
             </span>
-            <Toggle checked={cam} onChange={setCam} />
+            <Toggle checked={cam} onChange={handleCamToggle} />
           </div>
         </div>
       </div>
