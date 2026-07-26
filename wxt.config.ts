@@ -11,6 +11,28 @@ export default defineConfig({
     name: 'QuickCast',
     description: 'Screen recorder for support engineers — records to your own Google Drive.',
     version: '0.1.0',
+    // Pins the extension's ID to a fixed value, regardless of which machine
+    // or folder path it's loaded (unpacked) from. Without this, Chrome
+    // derives an unpacked extension's ID from the absolute path of the
+    // folder it was loaded from — so the exact same files, loaded on two
+    // different machines (or even the same machine at a different path),
+    // get two different IDs. That breaks OAuth specifically:
+    // chrome.identity.getRedirectURL() embeds the extension ID
+    // (https://<id>.chromiumapp.org/), so a redirect URI registered in
+    // Google Cloud Console for one machine's ID produces
+    // Error 400: redirect_uri_mismatch on any other machine — confirmed
+    // live (worked on the original dev machine, failed identically on a
+    // second machine loading the same downloaded folder). This key is the
+    // base64 DER-encoded public half of a keypair generated solely to pin
+    // this ID — it is not a secret and carries no OAuth credentials of its
+    // own; the private key never leaves the machine that generated it and
+    // isn't needed again unless this key ever needs to be regenerated.
+    // Resulting fixed extension ID: kgbpncnkocggadpklblgfpibcooeoalg
+    // Resulting fixed OAuth redirect URI:
+    //   https://kgbpncnkocggadpklblgfpibcooeoalg.chromiumapp.org/
+    // Anyone setting up their own Google Cloud OAuth client for QuickCast
+    // must register exactly that redirect URI — see the in-app setup guide.
+    key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAiBp0Xc1cgiZaleRsxkwafCvOfX4pwJ//AZcwUIqTcyll0OqtcoBNhiogHCUAavhPGz2k5d94AGkBnlWoDiouwrKGo8Aw101QXxYXI+EbwMOwpUnWxC2hlt77uEmE/0QuDqFynqXkwt6yDK8ocpO7EOFY5odJ9h6Hg5wsswKv1pYa9H9zgZABGFNoQGErasTrY2/cw0hj+FvNoaWTOEbAW6dMUgfL29VJnjKKRYhXgIBUTnp4tTeTlndGk4RxSgmnTfGMfy/qBCr6V/sIfnc9rfjIrHalypsW+ZpVLhgjwZNqvDKZqZYzU2fA0n4+saUcwbHxIFoQR2qeGvwrb0LhOwIDAQAB',
     icons: {
       16: 'icons/icon-16.png',
       48: 'icons/icon-48.png',
